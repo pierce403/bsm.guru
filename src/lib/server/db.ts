@@ -107,7 +107,12 @@ function ensureSchema(db: DatabaseSync) {
 }
 
 export function getDb() {
-  if (globalThis.__bsmDb) return globalThis.__bsmDb;
+  if (globalThis.__bsmDb) {
+    // During Next dev/HMR the cached DB connection can outlive module reloads,
+    // so ensure we always have the latest schema (CREATE IF NOT EXISTS is safe).
+    ensureSchema(globalThis.__bsmDb);
+    return globalThis.__bsmDb;
+  }
 
   const dbPath = resolveDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
