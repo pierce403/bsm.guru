@@ -1,6 +1,8 @@
 import "server-only";
 
-import { JsonRpcProvider, formatEther } from "ethers";
+import { JsonRpcProvider, Wallet, formatEther, isAddress } from "ethers";
+
+import { readKeystore } from "@/lib/server/wallets";
 
 const BASE_CHAIN_ID = 8453;
 
@@ -28,6 +30,91 @@ export async function getBaseBalance(address: string) {
     chainId: BASE_CHAIN_ID,
     balanceWei: wei.toString(),
     balanceEth: formatEther(wei),
+  };
+}
+
+export type BaseWithdrawAllResult = {
+  chainId: number;
+  from: string;
+  to: string;
+  valueWei: string;
+  valueEth: string;
+  gasLimit: string;
+  feePerGasWei: string;
+  txHash: string;
+};
+
+function mulDiv(n: bigint, mul: bigint, div: bigint) {
+  return (n * mul) / div;
+}
+
+export async function withdrawAllBaseEth(opts: {
+  fromAddress: string;
+  toAddress: string;
+  password: string;
+}): Promise<BaseWithdrawAllResult> {
+  const from = opts.fromAddress.toLowerCase();
+  const to = opts.toAddress.toLowerCase();
+
+  if (!isAddress(from)) throw new Error("Invalid from address");
+  if (!isAddress(to)) throw new Error("Invalid to address");
+  if (from === to) throw new Error("From and to cannot be the same address");
+
+  const provider = getBaseProvider();
+
+  const keystoreJson = readKeystore(from);
+  const wallet = await Wallet.fromEncryptedJson(keystoreJson, opts.password);
+  if (wallet.address.toLowerCase() !== from) {
+    throw new Error("Keystore does not match the requested from address");
+  }
+  const signer = wallet.connect(provider);
+
+  const balance = await provider.getBalance(from);
+  if (balance <= BigInt(0)) throw new Error("No ETH balance to withdraw");
+
+  // Estimate gas + fee data, then send max value that still leaves room for fees.
+  const estimate = await provider
+    .estimateGas({ from, to, value: BigInt(0) })
+    .catch(() => BigInt(21_000));
+  const gasLimit = mulDiv(estimate, BigInt(12), BigInt(10)); // +20% buffer
+
+  const feeData = await provider.getFeeData();
+  const feePerGas =
+    feeData.maxFeePerGas ?? feeData.gasPrice ?? null;
+  if (!feePerGas) throw new Error("Unable to determine gas price");
+
+  const gasCost = gasLimit * feePerGas;
+  const value = balance - gasCost;
+  if (value <= BigInt(0)) {
+    throw new Error(
+      `Balance too small to cover gas (balance ${formatEther(balance)} ETH)`,
+    );
+  }
+
+  const txRequest: Parameters<typeof signer.sendTransaction>[0] = {
+    to,
+    value,
+    gasLimit,
+  };
+
+  if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+    txRequest.maxFeePerGas = feeData.maxFeePerGas;
+    txRequest.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+  } else {
+    txRequest.gasPrice = feePerGas;
+  }
+
+  const tx = await signer.sendTransaction(txRequest);
+
+  return {
+    chainId: BASE_CHAIN_ID,
+    from,
+    to,
+    valueWei: value.toString(),
+    valueEth: formatEther(value),
+    gasLimit: gasLimit.toString(),
+    feePerGasWei: feePerGas.toString(),
+    txHash: tx.hash,
   };
 }
 

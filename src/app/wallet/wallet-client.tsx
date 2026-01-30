@@ -42,12 +42,26 @@ type TxsResponse =
   | { ts: number; address: string; explorer: string; txs: TxRow[] }
   | { error: string };
 
+type WithdrawTx = {
+  chainId: number;
+  from: string;
+  to: string;
+  valueWei: string;
+  valueEth: string;
+  gasLimit: string;
+  feePerGasWei: string;
+  txHash: string;
+};
+
+type WithdrawResponse = { ts: number; tx: WithdrawTx } | { error: string };
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   return (await res.json()) as T;
 }
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
+const WITHDRAW_TO_LS_KEY = "bsm.withdrawToBase";
 
 function formatTs(ts: number) {
   try {
@@ -91,7 +105,14 @@ export function WalletClient() {
   const [balances, setBalances] = useState<Record<string, BalanceResponse>>({});
   const [txs, setTxs] = useState<TxRow[]>([]);
   const [txLoading, setTxLoading] = useState(false);
-  const [qrOpen, setQrOpen] = useState(false);
+  const [qrMode, setQrMode] = useState<"arbitrum" | "base" | null>(null);
+
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [withdrawTo, setWithdrawTo] = useState("");
+  const [withdrawPassword, setWithdrawPassword] = useState("");
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawErr, setWithdrawErr] = useState<string | null>(null);
+  const [withdrawTx, setWithdrawTx] = useState<WithdrawTx | null>(null);
 
   const passwordIssue = useMemo(() => {
     if (password1.length === 0 && password2.length === 0) return null;
@@ -113,11 +134,18 @@ export function WalletClient() {
     return isBalanceOk(b) ? b : null;
   }, [balances, selectedWallet]);
 
-  const fundUri = useMemo(() => {
+  const fundUriArbitrum = useMemo(() => {
     if (!selectedWallet) return null;
     // EIP-681-ish. Some wallets ignore the chainId, but it helps when supported.
+    return `ethereum:${selectedWallet.address}@42161`;
+  }, [selectedWallet]);
+
+  const fundUriBase = useMemo(() => {
+    if (!selectedWallet) return null;
     return `ethereum:${selectedWallet.address}@8453`;
   }, [selectedWallet]);
+
+  const fundUri = qrMode === "arbitrum" ? fundUriArbitrum : fundUriBase;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -221,6 +249,23 @@ export function WalletClient() {
   }, [refresh]);
 
   useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(WITHDRAW_TO_LS_KEY);
+      if (saved) setWithdrawTo(saved);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (withdrawTo.trim()) window.localStorage.setItem(WITHDRAW_TO_LS_KEY, withdrawTo.trim());
+    } catch {
+      // ignore
+    }
+  }, [withdrawTo]);
+
+  useEffect(() => {
     if (wallets.length === 0) return;
     void loadBalances(wallets.map((w) => w.address));
   }, [wallets, loadBalances]);
@@ -243,6 +288,39 @@ export function WalletClient() {
       window.clearInterval(txId);
     };
   }, [selected, loadBalances, loadTxs]);
+
+  const withdrawAll = useCallback(async () => {
+    if (!selectedWallet) return;
+    setWithdrawing(true);
+    setWithdrawErr(null);
+    setWithdrawTx(null);
+
+    try {
+      const data = await fetchJson<WithdrawResponse>("/api/base/withdraw", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          fromAddress: selectedWallet.address,
+          toAddress: withdrawTo.trim(),
+          password: withdrawPassword,
+        }),
+      });
+
+      if ("error" in data) {
+        setWithdrawErr(data.error);
+        return;
+      }
+
+      setWithdrawTx(data.tx);
+      setWithdrawPassword("");
+      await loadBalances([selectedWallet.address]);
+      await loadTxs(selectedWallet.address);
+    } catch (e) {
+      setWithdrawErr(e instanceof Error ? e.message : "Withdraw failed");
+    } finally {
+      setWithdrawing(false);
+    }
+  }, [loadBalances, loadTxs, selectedWallet, withdrawPassword, withdrawTo]);
 
   return (
     <main className="space-y-6">
@@ -397,7 +475,7 @@ export function WalletClient() {
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-foreground">
-                  Selected wallet (Base)
+                  Selected wallet (EOA)
                 </p>
                 <p className="mt-2 break-all font-mono text-sm text-foreground">
                   {selectedWallet?.address ?? "—"}
@@ -448,29 +526,76 @@ export function WalletClient() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <div className="grid gap-4 sm:grid-cols-2">
               <button
                 type="button"
-                className="group flex w-full items-center justify-between rounded-3xl bg-background/60 p-4 ring-1 ring-border/80 transition hover:bg-background/70 sm:w-auto sm:min-w-[280px]"
-                onClick={() => setQrOpen(true)}
-                disabled={!fundUri}
+                className="group flex w-full items-center justify-between rounded-3xl bg-background/60 p-4 ring-1 ring-border/80 transition hover:bg-background/70"
+                onClick={() => setQrMode("arbitrum")}
+                disabled={!fundUriArbitrum}
               >
                 <div className="space-y-1 text-left">
-                  <p className="text-xs font-medium text-muted">Fund wallet</p>
-                  <p className="text-sm text-muted">Click to enlarge QR</p>
+                  <p className="text-xs font-medium text-muted">
+                    Fund for Hyperliquid
+                  </p>
+                  <p className="text-sm text-muted">Arbitrum (USDC) • click QR</p>
                 </div>
                 <div className="rounded-2xl bg-white p-3 shadow">
-                  {fundUri ? <QRCode value={fundUri} size={96} /> : <div className="h-24 w-24" />}
+                  {fundUriArbitrum ? (
+                    <QRCode value={fundUriArbitrum} size={96} />
+                  ) : (
+                    <div className="h-24 w-24" />
+                  )}
                 </div>
               </button>
 
-              <div className="flex-1 rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+              <button
+                type="button"
+                className="group flex w-full items-center justify-between rounded-3xl bg-background/60 p-4 ring-1 ring-border/80 transition hover:bg-background/70"
+                onClick={() => setQrMode("base")}
+                disabled={!fundUriBase}
+              >
+                <div className="space-y-1 text-left">
+                  <p className="text-xs font-medium text-muted">Fund on Base</p>
+                  <p className="text-sm text-muted">ETH • click QR</p>
+                </div>
+                <div className="rounded-2xl bg-white p-3 shadow">
+                  {fundUriBase ? <QRCode value={fundUriBase} size={96} /> : <div className="h-24 w-24" />}
+                </div>
+              </button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
                 <p className="text-xs font-medium text-muted">Funding note</p>
                 <p className="mt-2 text-sm leading-6 text-muted">
-                  Send <span className="font-medium text-foreground">Base ETH</span>{" "}
-                  to the address above. Keep your backup JSON + password safe
-                  before depositing.
+                  Hyperliquid perp accounts are typically funded with{" "}
+                  <span className="font-medium text-foreground">USDC on Arbitrum</span>{" "}
+                  using the same EOA address. Base ETH is optional (useful for
+                  Base-only experiments / bridging / housekeeping).
                 </p>
+              </div>
+
+              <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-muted">Withdraw</p>
+                    <p className="text-sm text-muted">
+                      Send all Base ETH (minus gas) to a Base address.
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet}
+                    onClick={() => {
+                      setWithdrawErr(null);
+                      setWithdrawTx(null);
+                      setWithdrawPassword("");
+                      setWithdrawOpen(true);
+                    }}
+                  >
+                    Withdraw all
+                  </Button>
+                </div>
               </div>
             </div>
           </Card>
@@ -588,9 +713,15 @@ export function WalletClient() {
         </div>
       </div>
 
-      <Modal open={qrOpen} onClose={() => setQrOpen(false)} title="Fund wallet">
+      <Modal open={qrMode !== null} onClose={() => setQrMode(null)} title="Fund wallet">
         <div className="space-y-4">
-          <p className="text-sm text-muted">Scan to send Base ETH to:</p>
+          <p className="text-sm text-muted">
+            Scan to fund this wallet on{" "}
+            <span className="font-medium text-foreground">
+              {qrMode === "arbitrum" ? "Arbitrum" : "Base"}
+            </span>
+            :
+          </p>
           <p className="break-all rounded-2xl bg-background/60 p-3 font-mono text-xs text-foreground ring-1 ring-border/80">
             {selectedWallet?.address ?? "—"}
           </p>
@@ -598,8 +729,94 @@ export function WalletClient() {
             {fundUri ? <QRCode value={fundUri} size={320} /> : null}
           </div>
           <p className="text-xs text-muted">
-            If your wallet app asks, choose network{" "}
-            <span className="font-medium text-foreground">Base</span>.
+            If your wallet app asks, choose{" "}
+            <span className="font-medium text-foreground">
+              {qrMode === "arbitrum" ? "Arbitrum One" : "Base"}
+            </span>
+            .
+          </p>
+        </div>
+      </Modal>
+
+      <Modal
+        open={withdrawOpen}
+        onClose={() => setWithdrawOpen(false)}
+        title="Withdraw all (Base ETH)"
+      >
+        <div className="space-y-5">
+          <p className="text-sm text-muted">
+            This sends the{" "}
+            <span className="font-medium text-foreground">entire Base ETH</span>{" "}
+            balance of the selected custodial wallet (minus gas) to your chosen
+            destination address.
+          </p>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted">
+              Destination (your Base wallet)
+            </label>
+            <Input
+              inputMode="text"
+              placeholder="0x…"
+              value={withdrawTo}
+              onChange={(e) => setWithdrawTo(e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted">
+              Password (to decrypt keystore)
+            </label>
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={withdrawPassword}
+              onChange={(e) => setWithdrawPassword(e.target.value)}
+              placeholder="Not stored; used only to sign this tx"
+            />
+          </div>
+
+          {withdrawErr ? (
+            <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+              {withdrawErr}
+            </div>
+          ) : null}
+
+          {withdrawTx ? (
+            <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+              <p>
+                Sent <span className="font-mono text-foreground">{formatEth(withdrawTx.valueEth)} ETH</span>{" "}
+                to <span className="font-mono text-foreground">{shortAddr(withdrawTx.to)}</span>.
+              </p>
+              <p className="mt-2">
+                <a
+                  href={`https://base.blockscout.com/tx/${withdrawTx.txHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                >
+                  {withdrawTx.txHash.slice(0, 12)}…
+                </a>
+              </p>
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-3">
+            <Button variant="ghost" onClick={() => setWithdrawOpen(false)}>
+              Close
+            </Button>
+            <Button
+              disabled={withdrawing || !selectedWallet || withdrawTo.trim().length === 0 || withdrawPassword.length === 0}
+              onClick={() => void withdrawAll()}
+            >
+              {withdrawing ? "Withdrawing..." : "Withdraw all"}
+            </Button>
+          </div>
+
+          <p className="text-xs text-muted">
+            Tip: This is a plain ETH transfer on Base. If you accidentally funded
+            the wallet on Base but meant to fund Hyperliquid, withdraw and bridge
+            to Arbitrum.
           </p>
         </div>
       </Modal>
