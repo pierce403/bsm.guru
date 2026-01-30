@@ -117,3 +117,4 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 - 2026-01-30: Added local SQLite DB + Hyperliquid sync job (API + run.sh background sync) and a homepage markets dashboard ranked by BSM/lognormal sigma-move imbalance.
 - 2026-01-30: Added custodial wallet feature (encrypted keystore files on disk + download endpoint + wallet UI). Wallet APIs are localhost-only by default.
 - 2026-01-30: Wallet page now shows Base balance, funding QR (enlargeable), and tx history via Blockscout; homepage shows top-3 heuristic recommendations that refresh with market data.
+- 2026-01-30: Added Veritasium-style probability-weighted payoff chart (PDF + EV density) per market via a modal on the dashboard table.

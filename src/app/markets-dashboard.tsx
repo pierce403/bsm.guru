@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { PayoffProbabilityChart } from "@/components/charts/PayoffProbabilityChart";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Modal } from "@/components/ui/Modal";
@@ -66,6 +67,7 @@ export function MarketsDashboard() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -189,6 +191,11 @@ export function MarketsDashboard() {
 
     return candidates;
   }, [rows]);
+
+  const chartRow = useMemo(
+    () => (chartSymbol ? rows.find((r) => r.symbol === chartSymbol) ?? null : null),
+    [chartSymbol, rows],
+  );
 
   return (
     <main className="space-y-8">
@@ -334,6 +341,9 @@ export function MarketsDashboard() {
                 <th className="border-t border-border/60 px-6 py-3 font-medium">
                   24h notional
                 </th>
+                <th className="border-t border-border/60 px-6 py-3 font-medium">
+                  Chart
+                </th>
               </tr>
             </thead>
             <tbody className="text-sm">
@@ -390,6 +400,16 @@ export function MarketsDashboard() {
                     <td className="border-t border-border/60 px-6 py-3 font-mono text-muted">
                       {r.day_ntl_vlm === null ? "—" : formatCompact(r.day_ntl_vlm)}
                     </td>
+                    <td className="border-t border-border/60 px-6 py-3">
+                      <button
+                        type="button"
+                        className="rounded-full bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground ring-1 ring-border/80 transition hover:bg-background/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                        disabled={r.realized_vol === null || !Number.isFinite(r.mid)}
+                        onClick={() => setChartSymbol(r.symbol)}
+                      >
+                        View
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -397,7 +417,7 @@ export function MarketsDashboard() {
               {ranked.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="border-t border-border/60 px-6 py-6 text-sm text-muted"
                   >
                     No data yet. Click “Sync now” to populate the local DB.
@@ -499,6 +519,48 @@ export function MarketsDashboard() {
             (and “tail p” will underestimate that in fat-tailed markets).
           </p>
         </div>
+      </Modal>
+
+      <Modal
+        open={!!chartSymbol}
+        onClose={() => setChartSymbol(null)}
+        title={chartRow ? `${chartRow.symbol}: probability-weighted payoff` : "Chart"}
+      >
+        {!chartRow ? (
+          <p className="text-sm text-muted">No data.</p>
+        ) : chartRow.realized_vol === null ? (
+          <p className="text-sm text-muted">Not enough data for σ.</p>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-muted">
+              This is a{" "}
+              <span className="font-medium text-foreground">
+                probability-weighted payoff
+              </span>{" "}
+              chart (pdf of price outcomes + expected-value density for a simple
+              long/short position). It’s the same visual style as those
+              Veritasium “is it overpriced?” charts, generalized to our
+              per-market signals.
+            </p>
+
+            <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+              <PayoffProbabilityChart
+                spot={chartRow.mid}
+                prev={chartRow.prev_day_px}
+                sigma={chartRow.realized_vol}
+                horizonDays={1}
+                side={(chartRow.sigma_move_24h ?? 0) >= 0 ? "short" : "long"}
+              />
+            </div>
+
+            <p className="text-xs text-muted">
+              Note: this uses a heuristic mean-reversion drift (based on the
+              24h sigma-move) to make the “too high / too low” intuition
+              explicit. Once we plug in real options quotes, we can render the
+              exact option payoff (premium/strike/expiry) the same way.
+            </p>
+          </div>
+        )}
       </Modal>
     </main>
   );
