@@ -1,0 +1,61 @@
+import { NextResponse } from "next/server";
+
+import { createWallet, listWallets } from "@/lib/server/wallets";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function assertLocalWalletUsage(req: Request) {
+  if (process.env.BSM_ALLOW_NONLOCAL_WALLET === "true") return;
+
+  const host = req.headers.get("host") ?? "";
+  const hostname = host.split(":")[0]?.toLowerCase();
+  if (hostname === "localhost" || hostname === "127.0.0.1") return;
+
+  throw new Error(
+    "Wallet APIs are restricted to localhost by default. Set BSM_ALLOW_NONLOCAL_WALLET=true to override.",
+  );
+}
+
+export async function GET(req: Request) {
+  try {
+    assertLocalWalletUsage(req);
+
+    const wallets = listWallets().map((w) => ({
+      address: w.address,
+      createdAt: w.createdAt,
+      downloadUrl: `/api/wallets/${w.address}/keystore`,
+    }));
+
+    return NextResponse.json({ ts: Date.now(), wallets });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Failed to list wallets" },
+      { status: 400 },
+    );
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    assertLocalWalletUsage(req);
+
+    const body = (await req.json()) as { password?: unknown };
+    const password = typeof body.password === "string" ? body.password : "";
+    const wallet = await createWallet({ password });
+    return NextResponse.json({
+      ts: Date.now(),
+      wallet: {
+        address: wallet.address,
+        createdAt: wallet.createdAt,
+        downloadUrl: `/api/wallets/${wallet.address}/keystore`,
+      },
+    });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Failed to create wallet" },
+      { status: 400 },
+    );
+  }
+}
+

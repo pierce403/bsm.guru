@@ -47,7 +47,9 @@ start_sync_loop() {
 case "$cmd" in
   "" )
     install_deps
-    host="${BSM_DEV_HOST:-http://localhost:${PORT:-3000}}"
+    dev_hostname="${BSM_HOSTNAME:-127.0.0.1}"
+    dev_port="${PORT:-3000}"
+    host="${BSM_DEV_HOST:-http://${dev_hostname}:${dev_port}}"
     sync_url="${BSM_SYNC_URL:-$host/api/sync/hyperliquid}"
     sync_interval="${BSM_SYNC_INTERVAL_SECONDS:-60}"
 
@@ -58,12 +60,14 @@ case "$cmd" in
     fi
 
     echo "Starting dev server at $host ..."
-    exec $PNPM dev
+    exec $PNPM dev -- --hostname "$dev_hostname"
     ;;
   "--no-sync" )
     install_deps
-    echo "Starting dev server at http://localhost:${PORT:-3000} ..."
-    exec $PNPM dev
+    dev_hostname="${BSM_HOSTNAME:-127.0.0.1}"
+    dev_port="${PORT:-3000}"
+    echo "Starting dev server at http://${dev_hostname}:${dev_port} ..."
+    exec $PNPM dev -- --hostname "$dev_hostname"
     ;;
   "--install-only" )
     install_deps
@@ -85,7 +89,8 @@ Usage:
 
 Env:
   BSM_DB_PATH                 # default: ./data/bsm.sqlite
-  BSM_DEV_HOST                # default: http://localhost:${PORT:-3000}
+  BSM_HOSTNAME                # default: 127.0.0.1 (Next dev hostname)
+  BSM_DEV_HOST                # default: http://$BSM_HOSTNAME:${PORT:-3000}
   BSM_SYNC_URL                # default: $BSM_DEV_HOST/api/sync/hyperliquid
   BSM_SYNC_INTERVAL_SECONDS   # default: 60
 EOF

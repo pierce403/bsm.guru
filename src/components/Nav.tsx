@@ -31,6 +31,9 @@ export function Nav() {
           <Link href="/pricing" className={cn(linkBase)}>
             Pricing
           </Link>
+          <Link href="/wallet" className={cn(linkBase)}>
+            Wallet
+          </Link>
           <Link href="/about" className={cn(linkBase)}>
             About
           </Link>
@@ -39,4 +42,3 @@ export function Nav() {
     </header>
   );
 }
-

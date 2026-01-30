@@ -8,12 +8,14 @@ Black-Scholes-Merton tooling for spotting relative value in crypto options.
 - `/screener`: pulls live underlying mids + historical candles from Hyperliquid, estimates realized volatility, and computes BSM fair value + greeks.  
   Note: option quotes are currently *simulated* (until we wire a real options venue / orderbook).
 - `/pricing`: BSM calculator + implied volatility inversion (call + put).
+- `/wallet`: generates local custodial wallets and stores encrypted keystores on disk (downloadable backup).
 - API routes (used by the UI):
   - `GET /api/hyperliquid/mids?coins=BTC,ETH`
   - `GET /api/hyperliquid/candles?coin=BTC&interval=1h&lookback=30d`
   - `GET /api/hyperliquid/meta`
   - `POST /api/sync/hyperliquid` (sync Hyperliquid -> local DB)
   - `GET /api/markets/summary` (read from local DB)
+  - `GET/POST /api/wallets` + `GET /api/wallets/:address/keystore`
 - Quant libs:
   - `src/lib/quant/bsm.ts` (price/greeks/implied vol)
   - `src/lib/quant/vol.ts` (realized vol)
@@ -25,6 +27,7 @@ Black-Scholes-Merton tooling for spotting relative value in crypto options.
 ```
 
 This starts the dev server and continuously syncs Hyperliquid data into a local SQLite file DB (default: `./data/bsm.sqlite`).
+By default `run.sh` binds Next dev to `127.0.0.1` (recommended when using the custodial wallet feature).
 
 Tests:
 
@@ -47,6 +50,11 @@ By default we hit Hyperliquid’s public API:
 Local DB:
 
 - `BSM_DB_PATH` (default: `./data/bsm.sqlite`)
+
+Wallets:
+
+- `BSM_WALLET_DIR` (default: `./data/wallets`)
+- `BSM_ALLOW_NONLOCAL_WALLET=true` (NOT recommended; disables localhost-only guard for wallet APIs)
 
 ## Next step (to make this “real”)
 
