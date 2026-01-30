@@ -85,6 +85,7 @@ If a user says "Base Hyperliquid network", clarify what that means (HyperEVM app
 Guidelines adapted from `recurse.bot` (paraphrased):
 
 - Work in small steps that can be validated (lint/test/build, or a focused UI check).
+- When a task is complete and validated, **commit and push** (small, descriptive commits).
 - Be explicit about unknowns; ask a single sharp clarifying question when blocked.
 - Prefer leaving notes + guardrails over heroics (the next agent should not have to rediscover gotchas).
 - When you learn something important, update this file immediately.
@@ -98,4 +99,3 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 ## Update Log (Append Only, Keep Short)
 
 - 2026-01-29: Bootstrapped Next.js + TS + Tailwind; added BSM/IV/vol libs + tests; added Hyperliquid API routes; built Screener + Pricing pages; fixed Turbopack root + TS typeRoots pitfalls.
-
