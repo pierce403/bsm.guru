@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Modal } from "@/components/ui/Modal";
 
 type SummaryRow = {
   symbol: string;
@@ -56,6 +57,7 @@ export function MarketsDashboard() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   async function refresh() {
     try {
@@ -131,6 +133,9 @@ export function MarketsDashboard() {
               {lastSync ? new Date(lastSync).toLocaleTimeString() : "never"}
             </p>
           </div>
+          <Button variant="ghost" onClick={() => setAboutOpen(true)}>
+            About metrics
+          </Button>
           <Button
             variant="soft"
             disabled={syncing}
@@ -263,6 +268,98 @@ export function MarketsDashboard() {
           </table>
         </div>
       </Card>
+
+      <Modal
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        title="How to read “Realized σ”, “Sigma move”, and “Tail p”"
+      >
+        <div className="space-y-6 text-sm leading-6 text-muted">
+          <p>
+            These fields are a quick way to standardize “how wild was today’s
+            move?” across different coins. They’re not magic (crypto returns
+            have fat tails), but they’re great for ranking markets and sizing
+            risk.
+          </p>
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-foreground">
+              Definitions
+            </h3>
+            <div className="space-y-3 rounded-2xl bg-background/60 p-4 ring-1 ring-border/80">
+              <p>
+                <span className="font-medium text-foreground">Realized σ</span>{" "}
+                is the annualized realized volatility from recent candles (std
+                dev of log returns, scaled to “per year”). Higher = the market
+                has been whipping around lately.
+              </p>
+              <p>
+                <span className="font-medium text-foreground">Sigma move</span>{" "}
+                is the 24h log-return expressed in standard deviations:
+              </p>
+              <pre className="overflow-x-auto rounded-2xl bg-background/60 p-3 font-mono text-xs text-foreground ring-1 ring-border/80">
+{`z = ln(mid / prevDayPx) / (σ * sqrt(1/365))`}
+              </pre>
+              <p>
+                <span className="font-medium text-foreground">Tail p</span> is
+                the two-sided “how extreme is this?” probability under a normal
+                model:
+              </p>
+              <pre className="overflow-x-auto rounded-2xl bg-background/60 p-3 font-mono text-xs text-foreground ring-1 ring-border/80">
+{`p = 2 * (1 - Φ(|z|))`}
+              </pre>
+              <p className="text-xs">
+                Lower <span className="font-mono text-foreground">p</span>{" "}
+                means the move is more extreme relative to recent volatility.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.22em] text-foreground">
+              How people use this (practically)
+            </h3>
+            <div className="space-y-3 rounded-2xl bg-background/60 p-4 ring-1 ring-border/80">
+              <p>
+                <span className="font-medium text-foreground">
+                  Find dislocations fast:
+                </span>{" "}
+                sort by <span className="font-mono text-foreground">|z|</span>{" "}
+                or low tail p to see which markets are doing something unusual
+                today.
+              </p>
+              <p>
+                <span className="font-medium text-foreground">
+                  Size risk consistently:
+                </span>{" "}
+                treat <span className="font-mono text-foreground">z</span> as a
+                standardized shock. If you’re allocating across many coins,
+                this helps avoid “oops I forgot this one moves 3x as much”.
+              </p>
+              <p>
+                <span className="font-medium text-foreground">
+                  Separate “big move” from “big surprise”:
+                </span>{" "}
+                a 5% day might be boring if realized σ is huge, but a 2% day can
+                be a shock if realized σ is tiny.
+              </p>
+              <p>
+                <span className="font-medium text-foreground">
+                  Options (when wired in):
+                </span>{" "}
+                compare realized σ vs implied vol and use tail p / sigma-moves
+                to sanity-check whether the option surface is “pricing the
+                chaos” appropriately.
+              </p>
+            </div>
+          </div>
+
+          <p className="text-xs">
+            For research only. Not financial advice. Extreme moves can continue
+            (and “tail p” will underestimate that in fat-tailed markets).
+          </p>
+        </div>
+      </Modal>
     </main>
   );
 }
