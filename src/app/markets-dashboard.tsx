@@ -24,6 +24,14 @@ type SummaryResponse = {
   rows: SummaryRow[];
 };
 
+type Recommendation = {
+  symbol: string;
+  title: string;
+  subtitle: string;
+  rationale: string;
+  stats: Array<{ label: string; value: string; tone?: "muted" | "good" | "bad" }>;
+};
+
 function formatCompact(n: number) {
   const abs = Math.abs(n);
   if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
@@ -114,6 +122,74 @@ export function MarketsDashboard() {
     return copy;
   }, [rows]);
 
+  const recommendations = useMemo<Recommendation[]>(() => {
+    const candidates = rows
+      .filter((r) => r.sigma_move_24h !== null && r.realized_vol !== null)
+      .map((r) => {
+        const z = r.sigma_move_24h ?? 0;
+        const abs = Math.abs(z);
+        const liq = Math.log10((r.day_ntl_vlm ?? 1) + 1);
+        const score = abs * (1 + liq);
+        return { r, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(({ r }) => {
+        const z = r.sigma_move_24h ?? 0;
+        const abs = Math.abs(z);
+        const tail = r.tail_prob_24h;
+        const sigma = r.realized_vol;
+
+        const direction = z >= 0 ? "Short" : "Long";
+        const style =
+          abs >= 2.5
+            ? "Fade extreme move"
+            : abs >= 1.75
+              ? "Reversion watch"
+              : "Flow-follow";
+
+        const title = `${direction} ${r.symbol}`;
+        const subtitle = style;
+
+        const rationale =
+          tail !== null && sigma !== null
+            ? `24h move is ${abs.toFixed(2)}σ (tail p ${(tail * 100).toFixed(2)}%) with realized σ ${(sigma * 100).toFixed(1)}%.`
+            : `24h move is ${abs.toFixed(2)}σ.`;
+
+        const stats: Recommendation["stats"] = [
+          {
+            label: "Sigma move",
+            value: z.toFixed(2),
+            tone: abs >= 2.5 ? "bad" : abs >= 1.75 ? "muted" : "muted",
+          },
+          {
+            label: "Tail p",
+            value: tail === null ? "—" : `${(tail * 100).toFixed(2)}%`,
+            tone: tail !== null && tail < 0.05 ? "bad" : "muted",
+          },
+          {
+            label: "Realized σ",
+            value: sigma === null ? "—" : `${(sigma * 100).toFixed(1)}%`,
+            tone: "muted",
+          },
+          {
+            label: "24h",
+            value: r.ret_24h === null ? "—" : formatPercent(r.ret_24h),
+            tone:
+              r.ret_24h === null
+                ? "muted"
+                : r.ret_24h >= 0
+                  ? "good"
+                  : "bad",
+          },
+        ];
+
+        return { symbol: r.symbol, title, subtitle, rationale, stats };
+      });
+
+    return candidates;
+  }, [rows]);
+
   return (
     <main className="space-y-8">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -155,6 +231,70 @@ export function MarketsDashboard() {
           </p>
         </Card>
       ) : null}
+
+      <section className="space-y-3">
+        <div className="flex items-end justify-between gap-6">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              Top 3 recommended positions
+            </p>
+            <p className="text-xs text-muted">
+              Heuristic signals derived from the current metrics. Updates on every
+              refresh.
+            </p>
+          </div>
+          <p className="text-xs text-muted">
+            Research only (not financial advice).
+          </p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          {recommendations.map((rec) => (
+            <Card key={rec.symbol} className="space-y-3">
+              <div>
+                <p className="font-display text-2xl tracking-tight text-foreground">
+                  {rec.title}
+                </p>
+                <p className="text-sm text-muted">{rec.subtitle}</p>
+              </div>
+              <p className="text-sm leading-6 text-muted">{rec.rationale}</p>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {rec.stats.map((s) => (
+                  <div
+                    key={s.label}
+                    className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80"
+                  >
+                    <p className="text-[11px] font-medium text-muted">
+                      {s.label}
+                    </p>
+                    <p
+                      className={[
+                        "mt-1 font-mono text-sm",
+                        s.tone === "good"
+                          ? "text-success"
+                          : s.tone === "bad"
+                            ? "text-danger"
+                            : "text-foreground",
+                      ].join(" ")}
+                    >
+                      {s.value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ))}
+
+          {recommendations.length === 0 ? (
+            <Card className="md:col-span-3">
+              <p className="text-sm text-muted">
+                No recommendations yet (waiting for the DB to sync and produce
+                metrics).
+              </p>
+            </Card>
+          ) : null}
+        </div>
+      </section>
 
       <Card className="p-0">
         <div className="flex items-center justify-between px-6 py-4">

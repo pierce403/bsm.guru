@@ -56,6 +56,11 @@ Wallets:
 - `BSM_WALLET_DIR` (default: `./data/wallets`)
 - `BSM_ALLOW_NONLOCAL_WALLET=true` (NOT recommended; disables localhost-only guard for wallet APIs)
 
+Base chain (wallet balance + tx history):
+
+- `BASE_RPC_URL` (default: `https://mainnet.base.org`)
+- `BASE_EXPLORER_API_URL` (default: `https://base.blockscout.com/api`)
+
 ## Next step (to make this “real”)
 
 To actually *find mispriced options*, we need a live options venue (quotes + instrument metadata: expiry/strike/right).
