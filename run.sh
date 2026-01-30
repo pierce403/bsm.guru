@@ -25,10 +25,44 @@ install_deps() {
   fi
 }
 
+start_sync_loop() {
+  local url="$1"
+  local interval_s="$2"
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "warning: curl not found; skipping background DB sync."
+    return 0
+  fi
+
+  (
+    while true; do
+      curl -sf -X POST "$url" -H "content-type: application/json" -d '{}' >/dev/null || true
+      sleep "$interval_s"
+    done
+  ) &
+
+  echo $!
+}
+
 case "$cmd" in
   "" )
     install_deps
-    echo "Starting dev server at http://localhost:3000 ..."
+    host="${BSM_DEV_HOST:-http://localhost:${PORT:-3000}}"
+    sync_url="${BSM_SYNC_URL:-$host/api/sync/hyperliquid}"
+    sync_interval="${BSM_SYNC_INTERVAL_SECONDS:-60}"
+
+    sync_pid="$(start_sync_loop "$sync_url" "$sync_interval" || true)"
+    if [[ -n "${sync_pid:-}" ]]; then
+      trap 'kill "$sync_pid" >/dev/null 2>&1 || true' EXIT
+      echo "Background DB sync: POST $sync_url every ${sync_interval}s (pid $sync_pid)"
+    fi
+
+    echo "Starting dev server at $host ..."
+    exec $PNPM dev
+    ;;
+  "--no-sync" )
+    install_deps
+    echo "Starting dev server at http://localhost:${PORT:-3000} ..."
     exec $PNPM dev
     ;;
   "--install-only" )
@@ -44,9 +78,16 @@ case "$cmd" in
   "-h" | "--help" )
     cat <<'EOF'
 Usage:
-  ./run.sh              # install deps (if needed) and start dev server
+  ./run.sh              # install deps (if needed), background-sync, and start dev server
+  ./run.sh --no-sync
   ./run.sh --install-only
   ./run.sh --check      # lint + test + build
+
+Env:
+  BSM_DB_PATH                 # default: ./data/bsm.sqlite
+  BSM_DEV_HOST                # default: http://localhost:${PORT:-3000}
+  BSM_SYNC_URL                # default: $BSM_DEV_HOST/api/sync/hyperliquid
+  BSM_SYNC_INTERVAL_SECONDS   # default: 60
 EOF
     ;;
   * )
@@ -55,4 +96,3 @@ EOF
     exit 2
     ;;
 esac
-

@@ -43,6 +43,25 @@ export async function getMeta() {
   return hyperliquidInfo<HyperliquidMeta>({ type: "meta" });
 }
 
+export type HyperliquidAssetCtx = {
+  funding: string;
+  openInterest: string;
+  prevDayPx: string;
+  dayNtlVlm: string;
+  premium: string;
+  oraclePx: string;
+  markPx: string;
+  midPx: string;
+  impactPxs: [string, string];
+  dayBaseVlm: string;
+};
+
+export async function getMetaAndAssetCtxs() {
+  return hyperliquidInfo<[HyperliquidMeta, HyperliquidAssetCtx[]]>({
+    type: "metaAndAssetCtxs",
+  });
+}
+
 export type HyperliquidCandle = {
   t: number; // start time ms
   T: number; // end time ms

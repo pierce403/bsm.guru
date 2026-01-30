@@ -9,6 +9,8 @@ It is inspired by the workflow in `https://recurse.bot`: leave breadcrumbs for t
 
 Build a clean, fast web app that uses Black-Scholes-Merton (BSM) as a baseline to spot potentially mispriced crypto options. Today we:
 
+- Sync Hyperliquid market data into a local SQLite DB.
+- Rank markets by a BSM/lognormal "sigma move" imbalance metric.
 - Fetch live underlying mids + historical candles from Hyperliquid.
 - Estimate realized volatility from candles.
 - Compute BSM prices/greeks + implied vol.
@@ -17,8 +19,7 @@ Build a clean, fast web app that uses Black-Scholes-Merton (BSM) as a baseline t
 ## Quick Start
 
 ```bash
-pnpm install
-pnpm dev
+./run.sh
 ```
 
 Quality gates:
@@ -32,7 +33,7 @@ pnpm build
 ## Repo Map
 
 - App routes (Next App Router): `src/app/*`
-  - Landing: `src/app/page.tsx`
+  - Dashboard (markets/imbalance): `src/app/page.tsx`, `src/app/markets-dashboard.tsx`
   - Screener UI: `src/app/screener/screener-client.tsx`
   - Pricing sandbox: `src/app/pricing/pricing-client.tsx`
   - About: `src/app/about/page.tsx`
@@ -40,12 +41,17 @@ pnpm build
   - `GET /api/hyperliquid/mids` -> `src/app/api/hyperliquid/mids/route.ts`
   - `GET /api/hyperliquid/candles` -> `src/app/api/hyperliquid/candles/route.ts`
   - `GET /api/hyperliquid/meta` -> `src/app/api/hyperliquid/meta/route.ts`
+  - `POST /api/sync/hyperliquid` -> `src/app/api/sync/hyperliquid/route.ts`
+  - `GET /api/markets/summary` -> `src/app/api/markets/summary/route.ts`
 - Hyperliquid client helpers: `src/lib/hyperliquid/info.ts`
 - Quant library:
   - Normal CDF/PDF: `src/lib/quant/normal.ts`
   - BSM price/greeks/IV: `src/lib/quant/bsm.ts`
   - Realized vol: `src/lib/quant/vol.ts`
   - Tests: `src/lib/quant/*.test.ts`
+- Server-only:
+  - Local DB schema + access: `src/lib/server/db.ts`
+  - Hyperliquid sync job: `src/lib/server/sync/hyperliquid.ts`
 - UI primitives: `src/components/ui/*`
 
 ## Data Sources / Assumptions
@@ -54,7 +60,9 @@ pnpm build
   - `allMids` (underlying mid)
   - `candleSnapshot` (historical closes)
   - `meta` (universe list)
+  - `metaAndAssetCtxs` (market context: midPx, prevDayPx, volumes, etc.)
 - Configure API base URL via `HYPERLIQUID_API_URL` (defaults to `https://api.hyperliquid.xyz`).
+- Local cache DB: SQLite file at `BSM_DB_PATH` (default: `./data/bsm.sqlite`).
 - No options chain is integrated yet. In the screener, "market option mids" are simulated via a deterministic function in `src/app/screener/screener-client.tsx` (`pseudoMisprice`).
 
 ## Known Pitfalls (Read This If Things Break)
@@ -99,3 +107,4 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 ## Update Log (Append Only, Keep Short)
 
 - 2026-01-29: Bootstrapped Next.js + TS + Tailwind; added BSM/IV/vol libs + tests; added Hyperliquid API routes; built Screener + Pricing pages; fixed Turbopack root + TS typeRoots pitfalls.
+- 2026-01-30: Added local SQLite DB + Hyperliquid sync job (API + run.sh background sync) and a homepage markets dashboard ranked by BSM/lognormal sigma-move imbalance.
