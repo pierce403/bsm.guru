@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { markToMarket } from "@/lib/server/positions";
+import { markToMarket, positionHealth } from "@/lib/server/positions";
 
 describe("markToMarket", () => {
   it("computes long PnL and value", () => {
@@ -44,3 +44,26 @@ describe("markToMarket", () => {
   });
 });
 
+describe("positionHealth", () => {
+  it("marks an aligned position as strong/good", () => {
+    // z<0 implies contrarian long.
+    const h = positionHealth({ side: "long", sigmaMove24h: -2 });
+    expect(h.action).toBe("hold");
+    expect(h.label).toBe("Strong");
+    expect(h.score).toBeGreaterThan(0);
+  });
+
+  it("recommends exiting when edge is gone", () => {
+    const h = positionHealth({ side: "long", sigmaMove24h: -0.2 });
+    expect(h.action).toBe("exit");
+    expect(h.label).toBe("Edge gone");
+  });
+
+  it("recommends exiting immediately when the signal flips strongly", () => {
+    // z>0 implies contrarian short; long is misaligned.
+    const h = positionHealth({ side: "long", sigmaMove24h: 1.1 });
+    expect(h.action).toBe("exit_now");
+    expect(h.label).toBe("Exit now");
+    expect(h.score).toBeLessThan(0);
+  });
+});

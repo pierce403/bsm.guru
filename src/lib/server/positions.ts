@@ -24,14 +24,31 @@ export type PositionRow = {
 export type OpenPositionView = PositionRow & {
   current_px: number | null;
   current_ts: number | null;
+  realized_vol: number | null;
+  sigma_move_24h: number | null;
+  tail_prob_24h: number | null;
+  ret_24h: number | null;
   pnl: number | null;
   value: number | null;
   pnl_pct: number | null;
+  health_score: number | null; // [-1, +1], positive means aligned with signal
+  health_label: string | null;
+  health_action: "hold" | "review" | "exit" | "exit_now" | null;
+};
+
+export type PositionHealth = {
+  score: number | null;
+  label: string | null;
+  action: "hold" | "review" | "exit" | "exit_now" | null;
 };
 
 function toNumber(v: unknown) {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.min(Math.max(n, lo), hi);
 }
 
 export function markToMarket(opts: {
@@ -46,6 +63,39 @@ export function markToMarket(opts: {
   const value = opts.notional + pnl;
   const pnlPct = opts.notional === 0 ? null : pnl / opts.notional;
   return { pnl, value, pnlPct };
+}
+
+export function positionHealth(opts: {
+  side: PositionSide;
+  sigmaMove24h: number | null;
+}): PositionHealth {
+  if (opts.sigmaMove24h === null || !Number.isFinite(opts.sigmaMove24h)) {
+    return { score: null, label: null, action: null };
+  }
+
+  const z = opts.sigmaMove24h;
+  const absZ = Math.abs(z);
+
+  // This mirrors how the "recommended positions" are derived:
+  // - if the asset moved up in 24h (z>0), the contrarian stance is short
+  // - if the asset moved down (z<0), contrarian stance is long
+  const desired: PositionSide = z >= 0 ? "short" : "long";
+  const aligned = desired === opts.side;
+
+  // Strength is how "far from normal" the move is, capped for stability.
+  const strength = clamp(absZ / 2.5, 0, 1);
+  const score = (aligned ? 1 : -1) * strength;
+
+  if (!aligned) {
+    return absZ >= 1
+      ? { score, label: "Exit now", action: "exit_now" }
+      : { score, label: "Exit", action: "exit" };
+  }
+
+  if (absZ < 0.5) return { score, label: "Edge gone", action: "exit" };
+  if (absZ < 1.0) return { score, label: "Weak", action: "review" };
+  if (absZ < 2.0) return { score, label: "Good", action: "hold" };
+  return { score, label: "Strong", action: "hold" };
 }
 
 function getLatestMid(symbol: string) {
@@ -74,18 +124,51 @@ export function listOpenPositions(): OpenPositionView[] {
       `SELECT
          p.id, p.symbol, p.side, p.notional, p.qty, p.entry_px, p.entry_ts,
          p.status, p.exit_px, p.exit_ts, p.closed_pnl, p.meta_json, p.updated_at,
-         m.mid AS current_px, m.ts AS current_ts
+         COALESCE(m.mid, c.mid_px) AS current_px,
+         COALESCE(m.ts, c.ts) AS current_ts,
+         m.realized_vol,
+         m.sigma_move_24h,
+         m.tail_prob_24h,
+         m.ret_24h
        FROM positions p
        LEFT JOIN market_metrics_latest m ON m.symbol = p.symbol
+       LEFT JOIN asset_ctx_latest c ON c.symbol = p.symbol
        WHERE p.status='open'
        ORDER BY p.updated_at DESC`,
     )
-    .all() as Array<PositionRow & { current_px: number | null; current_ts: number | null }>;
+    .all() as Array<
+      PositionRow & {
+        current_px: number | null;
+        current_ts: number | null;
+        realized_vol: number | null;
+        sigma_move_24h: number | null;
+        tail_prob_24h: number | null;
+        ret_24h: number | null;
+      }
+    >;
 
   return rows.map((r) => {
     const currentPx = toNumber(r.current_px);
+    const sigmaMove = toNumber(r.sigma_move_24h);
+    const { score, label, action } = positionHealth({
+      side: r.side,
+      sigmaMove24h: sigmaMove,
+    });
+
     if (currentPx === null || currentPx <= 0) {
-      return { ...r, pnl: null, value: null, pnl_pct: null };
+      return {
+        ...r,
+        sigma_move_24h: sigmaMove,
+        realized_vol: toNumber(r.realized_vol),
+        tail_prob_24h: toNumber(r.tail_prob_24h),
+        ret_24h: toNumber(r.ret_24h),
+        pnl: null,
+        value: null,
+        pnl_pct: null,
+        health_score: score,
+        health_label: label,
+        health_action: action,
+      };
     }
 
     const res = markToMarket({
@@ -96,7 +179,19 @@ export function listOpenPositions(): OpenPositionView[] {
       currentPx,
     });
 
-    return { ...r, pnl: res.pnl, value: res.value, pnl_pct: res.pnlPct };
+    return {
+      ...r,
+      sigma_move_24h: sigmaMove,
+      realized_vol: toNumber(r.realized_vol),
+      tail_prob_24h: toNumber(r.tail_prob_24h),
+      ret_24h: toNumber(r.ret_24h),
+      pnl: res.pnl,
+      value: res.value,
+      pnl_pct: res.pnlPct,
+      health_score: score,
+      health_label: label,
+      health_action: action,
+    };
   });
 }
 
@@ -193,4 +288,3 @@ export function closePosition(id: number) {
   if (!updated) throw new Error("Failed to close position");
   return updated;
 }
-

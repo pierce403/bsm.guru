@@ -61,9 +61,16 @@ type OpenPosition = {
   entry_ts: number;
   current_px: number | null;
   current_ts: number | null;
+  realized_vol: number | null;
+  sigma_move_24h: number | null;
+  tail_prob_24h: number | null;
+  ret_24h: number | null;
   pnl: number | null;
   pnl_pct: number | null;
   value: number | null;
+  health_score: number | null;
+  health_label: string | null;
+  health_action: "hold" | "review" | "exit" | "exit_now" | null;
 };
 
 type PositionsResponse = { ts: number; positions: OpenPosition[] };
@@ -393,6 +400,7 @@ export function MarketsDashboard() {
                   <th className="px-6 py-3 font-medium">Entry</th>
                   <th className="px-6 py-3 font-medium">Current</th>
                   <th className="px-6 py-3 font-medium">Value</th>
+                  <th className="px-6 py-3 font-medium">Health</th>
                   <th className="px-6 py-3 font-medium">Exit</th>
                 </tr>
               </thead>
@@ -406,6 +414,16 @@ export function MarketsDashboard() {
                       : p.pnl >= 0
                         ? "text-success"
                         : "text-danger";
+
+                  const healthTone =
+                    p.health_action === "exit_now" || p.health_action === "exit"
+                      ? "text-danger"
+                      : p.health_action === "review"
+                        ? "text-accent2"
+                        : p.health_action === "hold"
+                          ? "text-success"
+                          : "text-muted";
+
                   return (
                     <tr key={p.id} className="hover:bg-background/40">
                       <td className="border-t border-border/60 px-6 py-3 font-mono text-foreground">
@@ -440,13 +458,34 @@ export function MarketsDashboard() {
                             : `pnl ${formatCompact(p.pnl)} (${p.pnl_pct === null ? "—" : formatPercent(p.pnl_pct)})`}
                         </p>
                       </td>
+
+                      <td className="border-t border-border/60 px-6 py-3">
+                        <p
+                          className={[
+                            "font-mono text-sm",
+                            healthTone,
+                          ].join(" ")}
+                        >
+                          {p.health_label ?? "—"}
+                        </p>
+                        <p className="mt-1 text-[11px] font-mono text-muted">
+                          {p.sigma_move_24h === null || p.tail_prob_24h === null
+                            ? "z — • tail —"
+                            : `z ${p.sigma_move_24h.toFixed(2)} • tail ${(p.tail_prob_24h * 100).toFixed(2)}%`}
+                        </p>
+                      </td>
+
                       <td className="border-t border-border/60 px-6 py-3">
                         <Button
-                          variant="ghost"
+                          variant={p.health_action === "exit_now" ? "primary" : "ghost"}
                           disabled={exitingId === p.id}
                           onClick={() => void exitPosition(p.id)}
                         >
-                          {exitingId === p.id ? "Exiting..." : "Exit"}
+                          {exitingId === p.id
+                            ? "Exiting..."
+                            : p.health_action === "exit_now"
+                              ? "Exit now"
+                              : "Exit"}
                         </Button>
                       </td>
                     </tr>
