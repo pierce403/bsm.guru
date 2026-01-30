@@ -42,10 +42,12 @@ start_sync_loop() {
 
   (
     while true; do
-      curl -sf -X POST "$url" -H "content-type: application/json" -d '{}' >/dev/null || true
+      # Avoid hanging if the dev server is down or the endpoint stalls.
+      curl -sf --connect-timeout 2 --max-time 10 \
+        -X POST "$url" -H "content-type: application/json" -d '{}' >/dev/null || true
       sleep "$interval_s"
     done
-  ) &
+  ) </dev/null >/dev/null 2>&1 &
 
   echo $!
 }
