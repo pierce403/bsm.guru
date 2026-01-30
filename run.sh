@@ -25,6 +25,12 @@ install_deps() {
   fi
 }
 
+ensure_logs() {
+  local dir="${BSM_LOG_DIR:-$ROOT/logs}"
+  mkdir -p "$dir"
+  touch "$dir/analysis.log" "$dir/trade.log" "$dir/error.log"
+}
+
 start_sync_loop() {
   local url="$1"
   local interval_s="$2"
@@ -47,6 +53,7 @@ start_sync_loop() {
 case "$cmd" in
   "" )
     install_deps
+    ensure_logs
     dev_hostname="${BSM_HOSTNAME:-127.0.0.1}"
     dev_port="${PORT:-3000}"
     host="${BSM_DEV_HOST:-http://${dev_hostname}:${dev_port}}"
@@ -64,6 +71,7 @@ case "$cmd" in
     ;;
   "--no-sync" )
     install_deps
+    ensure_logs
     dev_hostname="${BSM_HOSTNAME:-127.0.0.1}"
     dev_port="${PORT:-3000}"
     echo "Starting dev server at http://${dev_hostname}:${dev_port} ..."
@@ -75,6 +83,7 @@ case "$cmd" in
     ;;
   "--check" )
     install_deps
+    ensure_logs
     $PNPM lint
     $PNPM test
     $PNPM build
@@ -89,6 +98,7 @@ Usage:
 
 Env:
   BSM_DB_PATH                 # default: ./data/bsm.sqlite
+  BSM_LOG_DIR                 # default: ./logs
   BSM_HOSTNAME                # default: 127.0.0.1 (Next dev hostname)
   BSM_DEV_HOST                # default: http://$BSM_HOSTNAME:${PORT:-3000}
   BSM_SYNC_URL                # default: $BSM_DEV_HOST/api/sync/hyperliquid

@@ -33,6 +33,10 @@ yarn-error.log*
 # local data
 /data
 
+# local logs (tracked README only)
+/logs/*
+!/logs/README.md
+
 # env files (can opt-in for committing if needed)
 .env*
 
