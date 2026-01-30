@@ -28,7 +28,7 @@ install_deps() {
 ensure_logs() {
   local dir="${BSM_LOG_DIR:-$ROOT/logs}"
   mkdir -p "$dir"
-  touch "$dir/analysis.log" "$dir/trade.log" "$dir/error.log"
+  touch "$dir/analysis.log" "$dir/trade.log" "$dir/wallet.log" "$dir/error.log"
 }
 
 start_sync_loop() {

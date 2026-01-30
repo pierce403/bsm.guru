@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { logWalletEvent } from "@/lib/server/logs";
 import { isAddressLike, readKeystore } from "@/lib/server/wallets";
 
 export const runtime = "nodejs";
@@ -26,11 +27,23 @@ export async function GET(
 
     const { address } = await params;
     if (!isAddressLike(address)) {
+      await logWalletEvent(req, {
+        action: "wallets.keystore.download",
+        ok: false,
+        address,
+        error: "Invalid address",
+      });
       return NextResponse.json({ error: "Invalid address" }, { status: 400 });
     }
 
     const json = readKeystore(address.toLowerCase());
     const filename = `bsm-wallet-${address.toLowerCase()}.json`;
+
+    await logWalletEvent(req, {
+      action: "wallets.keystore.download",
+      ok: true,
+      address: address.toLowerCase(),
+    });
 
     return new NextResponse(json, {
       status: 200,
@@ -41,6 +54,12 @@ export async function GET(
       },
     });
   } catch (e) {
+    await logWalletEvent(req, {
+      action: "wallets.keystore.download",
+      ok: false,
+      error: e instanceof Error ? e.message : "Failed to read keystore",
+    });
+
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to read keystore" },
       { status: 400 },

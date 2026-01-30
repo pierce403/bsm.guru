@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logWalletEvent } from "@/lib/server/logs";
 import { createWallet, listWallets } from "@/lib/server/wallets";
 
 export const runtime = "nodejs";
@@ -27,8 +28,20 @@ export async function GET(req: Request) {
       downloadUrl: `/api/wallets/${w.address}/keystore`,
     }));
 
+    await logWalletEvent(req, {
+      action: "wallets.list",
+      ok: true,
+      count: wallets.length,
+    });
+
     return NextResponse.json({ ts: Date.now(), wallets });
   } catch (e) {
+    await logWalletEvent(req, {
+      action: "wallets.list",
+      ok: false,
+      error: e instanceof Error ? e.message : "Failed to list wallets",
+    });
+
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to list wallets" },
       { status: 400 },
@@ -43,6 +56,13 @@ export async function POST(req: Request) {
     const body = (await req.json()) as { password?: unknown };
     const password = typeof body.password === "string" ? body.password : "";
     const wallet = await createWallet({ password });
+
+    await logWalletEvent(req, {
+      action: "wallets.create",
+      ok: true,
+      address: wallet.address,
+    });
+
     return NextResponse.json({
       ts: Date.now(),
       wallet: {
@@ -52,10 +72,15 @@ export async function POST(req: Request) {
       },
     });
   } catch (e) {
+    await logWalletEvent(req, {
+      action: "wallets.create",
+      ok: false,
+      error: e instanceof Error ? e.message : "Failed to create wallet",
+    });
+
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to create wallet" },
       { status: 400 },
     );
   }
 }
-

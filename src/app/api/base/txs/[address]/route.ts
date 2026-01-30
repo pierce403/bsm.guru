@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAddress } from "ethers";
 
 import { getBaseTxs } from "@/lib/server/base";
+import { logWalletEvent } from "@/lib/server/logs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,12 @@ export async function GET(
 ) {
   const { address } = await params;
   if (!isAddress(address)) {
+    await logWalletEvent(req, {
+      action: "base.txs.get",
+      ok: false,
+      address,
+      error: "Invalid address",
+    });
     return NextResponse.json({ error: "Invalid address" }, { status: 400 });
   }
 
@@ -23,6 +30,13 @@ export async function GET(
 
   try {
     const txs = await getBaseTxs(address, limit);
+    await logWalletEvent(req, {
+      action: "base.txs.get",
+      ok: true,
+      address,
+      limit,
+      count: txs.length,
+    });
     return NextResponse.json({
       ts: Date.now(),
       address,
@@ -30,6 +44,16 @@ export async function GET(
       txs,
     });
   } catch (e) {
+    await logWalletEvent(req, {
+      action: "base.txs.get",
+      ok: false,
+      address,
+      limit,
+      error:
+        e instanceof Error
+          ? e.message
+          : "Failed to fetch transaction history",
+    });
     return NextResponse.json(
       {
         error:
@@ -41,4 +65,3 @@ export async function GET(
     );
   }
 }
-
