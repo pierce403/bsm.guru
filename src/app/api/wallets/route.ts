@@ -53,7 +53,7 @@ export async function POST(req: Request) {
   try {
     assertLocalWalletUsage(req);
 
-    const body = (await req.json()) as { password?: unknown };
+    const body = (await req.json().catch(() => ({}))) as { password?: unknown };
     const password = typeof body.password === "string" ? body.password : "";
     const wallet = await createWallet({ password });
 

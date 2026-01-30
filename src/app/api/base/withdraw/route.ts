@@ -39,14 +39,12 @@ export async function POST(req: Request) {
         { status: 400 },
       );
     }
-    if (!password) {
-      return NextResponse.json(
-        { error: "password is required" },
-        { status: 400 },
-      );
-    }
 
-    const tx = await withdrawAllBaseEth({ fromAddress, toAddress, password });
+    const tx = await withdrawAllBaseEth({
+      fromAddress,
+      toAddress,
+      password: password || undefined,
+    });
 
     await logWalletEvent(req, {
       action: "base.withdraw_all",
@@ -71,4 +69,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

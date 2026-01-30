@@ -1,6 +1,6 @@
 import "server-only";
 
-import { JsonRpcProvider, Wallet, formatEther, isAddress } from "ethers";
+import { Interface, JsonRpcProvider, Wallet, formatEther, isAddress } from "ethers";
 
 import { readKeystore } from "@/lib/server/wallets";
 
@@ -41,6 +41,7 @@ export type BaseWithdrawAllResult = {
   valueEth: string;
   gasLimit: string;
   feePerGasWei: string;
+  l1FeeWei: string;
   txHash: string;
 };
 
@@ -48,10 +49,28 @@ function mulDiv(n: bigint, mul: bigint, div: bigint) {
   return (n * mul) / div;
 }
 
+const GAS_PRICE_ORACLE = "0x420000000000000000000000000000000000000F";
+const gasOracleIface = new Interface([
+  "function getL1Fee(bytes) view returns (uint256)",
+]);
+
+async function estimateBaseL1FeeWei(provider: JsonRpcProvider, rawTx: string) {
+  try {
+    const data = gasOracleIface.encodeFunctionData("getL1Fee", [rawTx]);
+    const res = await provider.call({ to: GAS_PRICE_ORACLE, data });
+    const decoded = gasOracleIface.decodeFunctionResult("getL1Fee", res) as unknown as [
+      bigint,
+    ];
+    return decoded[0] ?? BigInt(0);
+  } catch {
+    return BigInt(0);
+  }
+}
+
 export async function withdrawAllBaseEth(opts: {
   fromAddress: string;
   toAddress: string;
-  password: string;
+  password?: string;
 }): Promise<BaseWithdrawAllResult> {
   const from = opts.fromAddress.toLowerCase();
   const to = opts.toAddress.toLowerCase();
@@ -63,7 +82,7 @@ export async function withdrawAllBaseEth(opts: {
   const provider = getBaseProvider();
 
   const keystoreJson = readKeystore(from);
-  const wallet = await Wallet.fromEncryptedJson(keystoreJson, opts.password);
+  const wallet = await Wallet.fromEncryptedJson(keystoreJson, opts.password ?? "");
   if (wallet.address.toLowerCase() !== from) {
     throw new Error("Keystore does not match the requested from address");
   }
@@ -79,32 +98,62 @@ export async function withdrawAllBaseEth(opts: {
   const gasLimit = mulDiv(estimate, BigInt(12), BigInt(10)); // +20% buffer
 
   const feeData = await provider.getFeeData();
-  const feePerGas =
-    feeData.maxFeePerGas ?? feeData.gasPrice ?? null;
-  if (!feePerGas) throw new Error("Unable to determine gas price");
+  const eip1559MaxFee = feeData.maxFeePerGas;
+  const eip1559Tip = feeData.maxPriorityFeePerGas;
+  const legacyGasPrice = feeData.gasPrice;
 
-  const gasCost = gasLimit * feePerGas;
-  const value = balance - gasCost;
+  const feePerGasBudget = eip1559MaxFee ?? legacyGasPrice ?? null;
+  if (!feePerGasBudget) throw new Error("Unable to determine gas price");
+
+  const nonce = await provider.getTransactionCount(from, "pending");
+  const baseTx: Parameters<typeof signer.sendTransaction>[0] = {
+    to,
+    gasLimit,
+    nonce,
+    chainId: BASE_CHAIN_ID,
+  };
+
+  if (eip1559MaxFee && eip1559Tip) {
+    baseTx.maxFeePerGas = eip1559MaxFee;
+    baseTx.maxPriorityFeePerGas = eip1559Tip;
+    baseTx.type = 2;
+  } else {
+    baseTx.gasPrice = feePerGasBudget;
+  }
+
+  const l2GasCost = gasLimit * feePerGasBudget;
+
+  // OP-stack chains (including Base) can charge additional L1 data fees. Estimate that
+  // from the GasPriceOracle predeploy and keep a buffer to avoid insufficient-funds
+  // errors if fees shift between estimation and submission.
+  let l1FeeBudget = BigInt(0);
+  let value = balance - l2GasCost;
+  for (let i = 0; i < 3; i += 1) {
+    if (value <= BigInt(0)) break;
+    const raw = await signer.signTransaction({ ...baseTx, value });
+    const l1 = await estimateBaseL1FeeWei(provider, raw);
+    const buffered =
+      l1 > BigInt(0)
+        ? l1 + mulDiv(l1, BigInt(2), BigInt(10)) + BigInt(1_000_000_000) // +20% + 1 gwei
+        : (() => {
+            const tenPercent = mulDiv(l2GasCost, BigInt(1), BigInt(10));
+            return tenPercent > BigInt(10_000_000_000)
+              ? tenPercent
+              : BigInt(10_000_000_000); // 10 gwei fallback
+          })();
+    const next = balance - l2GasCost - buffered;
+    l1FeeBudget = buffered;
+    if (next === value) break;
+    value = next;
+  }
+
   if (value <= BigInt(0)) {
     throw new Error(
       `Balance too small to cover gas (balance ${formatEther(balance)} ETH)`,
     );
   }
 
-  const txRequest: Parameters<typeof signer.sendTransaction>[0] = {
-    to,
-    value,
-    gasLimit,
-  };
-
-  if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
-    txRequest.maxFeePerGas = feeData.maxFeePerGas;
-    txRequest.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
-  } else {
-    txRequest.gasPrice = feePerGas;
-  }
-
-  const tx = await signer.sendTransaction(txRequest);
+  const tx = await signer.sendTransaction({ ...baseTx, value });
 
   return {
     chainId: BASE_CHAIN_ID,
@@ -113,7 +162,8 @@ export async function withdrawAllBaseEth(opts: {
     valueWei: value.toString(),
     valueEth: formatEther(value),
     gasLimit: gasLimit.toString(),
-    feePerGasWei: feePerGas.toString(),
+    feePerGasWei: feePerGasBudget.toString(),
+    l1FeeWei: l1FeeBudget.toString(),
     txHash: tx.hash,
   };
 }

@@ -51,9 +51,9 @@ export function listWallets(): WalletRecord[] {
   return wallets;
 }
 
-export async function createWallet(params: { password: string }) {
-  const password = params.password;
-  if (password.length < 10) {
+export async function createWallet(params: { password?: string }) {
+  const password = params.password ?? "";
+  if (password.length > 0 && password.length < 10) {
     throw new Error("Password too short (min 10 characters).");
   }
 
@@ -81,4 +81,3 @@ export function readKeystore(address: string) {
   const json = fs.readFileSync(filePath, "utf8");
   return json;
 }
-

@@ -50,6 +50,7 @@ type WithdrawTx = {
   valueEth: string;
   gasLimit: string;
   feePerGasWei: string;
+  l1FeeWei: string;
   txHash: string;
 };
 
@@ -62,6 +63,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
 const WITHDRAW_TO_LS_KEY = "bsm.withdrawToBase";
+const PASSWORD_LS_PREFIX = "bsm.walletPassword.";
 
 function formatTs(ts: number) {
   try {
@@ -97,8 +99,6 @@ export function WalletClient() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [password1, setPassword1] = useState("");
-  const [password2, setPassword2] = useState("");
   const [created, setCreated] = useState<WalletRow | null>(null);
 
   const [selected, setSelected] = useState<string | null>(null);
@@ -113,15 +113,6 @@ export function WalletClient() {
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawErr, setWithdrawErr] = useState<string | null>(null);
   const [withdrawTx, setWithdrawTx] = useState<WithdrawTx | null>(null);
-
-  const passwordIssue = useMemo(() => {
-    if (password1.length === 0 && password2.length === 0) return null;
-    if (password1.length > 0 && password1.length < 10)
-      return "Password must be at least 10 characters.";
-    if (password2.length > 0 && password1 !== password2)
-      return "Passwords do not match.";
-    return null;
-  }, [password1, password2]);
 
   const selectedWallet = useMemo(
     () => wallets.find((w) => w.address === selected) ?? null,
@@ -223,7 +214,7 @@ export function WalletClient() {
       const data = await fetchJson<CreateResponse>("/api/wallets", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password: password1 }),
+        body: JSON.stringify({}),
       });
 
       if ("error" in data) {
@@ -233,8 +224,6 @@ export function WalletClient() {
 
       setError(null);
       setCreated(data.wallet);
-      setPassword1("");
-      setPassword2("");
       setSelected(data.wallet.address);
       await refresh();
       await loadBalances([data.wallet.address]);
@@ -242,7 +231,7 @@ export function WalletClient() {
     } finally {
       setCreating(false);
     }
-  }, [loadBalances, loadTxs, password1, refresh]);
+  }, [loadBalances, loadTxs, refresh]);
 
   useEffect(() => {
     void refresh();
@@ -277,6 +266,12 @@ export function WalletClient() {
     } catch {
       // ignore
     }
+    try {
+      const saved = window.localStorage.getItem(`${PASSWORD_LS_PREFIX}${selected}`);
+      setWithdrawPassword(saved ?? "");
+    } catch {
+      setWithdrawPassword("");
+    }
     void loadBalances([selected]);
     void loadTxs(selected);
 
@@ -288,6 +283,20 @@ export function WalletClient() {
       window.clearInterval(txId);
     };
   }, [selected, loadBalances, loadTxs]);
+
+  useEffect(() => {
+    if (!selected) return;
+    try {
+      const key = `${PASSWORD_LS_PREFIX}${selected}`;
+      if (withdrawPassword.trim().length > 0) {
+        window.localStorage.setItem(key, withdrawPassword);
+      } else {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore
+    }
+  }, [selected, withdrawPassword]);
 
   const withdrawAll = useCallback(async () => {
     if (!selectedWallet) return;
@@ -302,7 +311,7 @@ export function WalletClient() {
         body: JSON.stringify({
           fromAddress: selectedWallet.address,
           toAddress: withdrawTo.trim(),
-          password: withdrawPassword,
+          password: withdrawPassword.trim() || undefined,
         }),
       });
 
@@ -312,7 +321,6 @@ export function WalletClient() {
       }
 
       setWithdrawTx(data.tx);
-      setWithdrawPassword("");
       await loadBalances([selectedWallet.address]);
       await loadTxs(selectedWallet.address);
     } catch (e) {
@@ -333,8 +341,9 @@ export function WalletClient() {
           and written to disk; you can download an encrypted backup JSON.
         </p>
         <p className="max-w-2xl text-xs leading-6 text-muted">
-          Do not expose this app to the internet. Keep passwords strong. Losing
-          the password means losing the funds.
+          Do not expose this app to the internet. This app is designed for a
+          local, secure environment and treats wallets as hot. If you set a
+          password on a wallet, it can be cached locally for automation.
         </p>
       </header>
 
@@ -354,41 +363,16 @@ export function WalletClient() {
           <Card className="space-y-5">
             <p className="text-sm font-medium text-foreground">Create wallet</p>
 
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted">Password</label>
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={password1}
-                onChange={(e) => setPassword1(e.target.value)}
-                placeholder="Min 10 characters"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted">
-                Confirm password
-              </label>
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={password2}
-                onChange={(e) => setPassword2(e.target.value)}
-                placeholder="Type it again"
-              />
-            </div>
-
-            {passwordIssue ? (
-              <div className="rounded-2xl bg-background/60 p-3 text-xs text-danger ring-1 ring-border/80">
-                {passwordIssue}
-              </div>
-            ) : null}
-
             <Button
-              disabled={creating || !!passwordIssue || password1.length === 0}
+              disabled={creating}
               onClick={() => void create()}
             >
               {creating ? "Creating..." : "Generate wallet"}
             </Button>
+            <p className="text-xs text-muted">
+              Wallets are created without a password by default (hot wallet).
+              Download a backup JSON and store it safely.
+            </p>
           </Card>
 
           <Card className="p-0">
@@ -589,7 +573,6 @@ export function WalletClient() {
                     onClick={() => {
                       setWithdrawErr(null);
                       setWithdrawTx(null);
-                      setWithdrawPassword("");
                       setWithdrawOpen(true);
                     }}
                   >
@@ -765,15 +748,19 @@ export function WalletClient() {
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted">
-              Password (to decrypt keystore)
+              Wallet password (optional)
             </label>
             <Input
               type="password"
               autoComplete="current-password"
               value={withdrawPassword}
               onChange={(e) => setWithdrawPassword(e.target.value)}
-              placeholder="Not stored; used only to sign this tx"
+              placeholder="Only needed for password-protected wallets"
             />
+            <p className="text-xs text-muted">
+              If set, this password is cached in your browser localStorage for
+              automation.
+            </p>
           </div>
 
           {withdrawErr ? (
@@ -806,7 +793,7 @@ export function WalletClient() {
               Close
             </Button>
             <Button
-              disabled={withdrawing || !selectedWallet || withdrawTo.trim().length === 0 || withdrawPassword.length === 0}
+              disabled={withdrawing || !selectedWallet || withdrawTo.trim().length === 0}
               onClick={() => void withdrawAll()}
             >
               {withdrawing ? "Withdrawing..." : "Withdraw all"}
