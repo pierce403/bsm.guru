@@ -4,11 +4,11 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-PNPM=""
+PNPM=()
 if command -v corepack >/dev/null 2>&1; then
-  PNPM="corepack pnpm"
+  PNPM=(corepack pnpm)
 elif command -v pnpm >/dev/null 2>&1; then
-  PNPM="pnpm"
+  PNPM=(pnpm)
 else
   echo "error: pnpm not found."
   echo "Install pnpm (recommended via corepack) then retry:"
@@ -21,7 +21,7 @@ cmd="${1:-}"
 install_deps() {
   if [[ ! -d node_modules ]]; then
     echo "Installing dependencies..."
-    $PNPM install
+    "${PNPM[@]}" install
   fi
 }
 
@@ -60,14 +60,22 @@ case "$cmd" in
     sync_url="${BSM_SYNC_URL:-$host/api/sync/hyperliquid}"
     sync_interval="${BSM_SYNC_INTERVAL_SECONDS:-60}"
 
+    sync_pid=""
+    cleanup() {
+      if [[ -n "${sync_pid:-}" ]]; then
+        kill "$sync_pid" >/dev/null 2>&1 || true
+      fi
+    }
+    trap cleanup EXIT INT TERM
+
     sync_pid="$(start_sync_loop "$sync_url" "$sync_interval" || true)"
     if [[ -n "${sync_pid:-}" ]]; then
-      trap 'kill "$sync_pid" >/dev/null 2>&1 || true' EXIT
       echo "Background DB sync: POST $sync_url every ${sync_interval}s (pid $sync_pid)"
     fi
 
     echo "Starting dev server at $host ..."
-    exec $PNPM dev -- --hostname "$dev_hostname"
+    # NOTE: Next's CLI treats a literal "--" here as a positional project dir.
+    "${PNPM[@]}" dev --hostname "$dev_hostname"
     ;;
   "--no-sync" )
     install_deps
@@ -75,7 +83,7 @@ case "$cmd" in
     dev_hostname="${BSM_HOSTNAME:-127.0.0.1}"
     dev_port="${PORT:-3000}"
     echo "Starting dev server at http://${dev_hostname}:${dev_port} ..."
-    exec $PNPM dev -- --hostname "$dev_hostname"
+    "${PNPM[@]}" dev --hostname "$dev_hostname"
     ;;
   "--install-only" )
     install_deps
@@ -84,9 +92,9 @@ case "$cmd" in
   "--check" )
     install_deps
     ensure_logs
-    $PNPM lint
-    $PNPM test
-    $PNPM build
+    "${PNPM[@]}" lint
+    "${PNPM[@]}" test
+    "${PNPM[@]}" build
     ;;
   "-h" | "--help" )
     cat <<'EOF'
