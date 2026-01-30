@@ -49,8 +49,28 @@ type AtmOptionSnapshot = {
 
 type AtmOptionResponse = { ts: number; snap: AtmOptionSnapshot | null };
 
+type PositionSide = "long" | "short";
+
+type OpenPosition = {
+  id: number;
+  symbol: string;
+  side: PositionSide;
+  notional: number;
+  qty: number;
+  entry_px: number;
+  entry_ts: number;
+  current_px: number | null;
+  current_ts: number | null;
+  pnl: number | null;
+  pnl_pct: number | null;
+  value: number | null;
+};
+
+type PositionsResponse = { ts: number; positions: OpenPosition[] };
+
 type Recommendation = {
   symbol: string;
+  side: PositionSide;
   title: string;
   subtitle: string;
   rationale: string;
@@ -90,6 +110,10 @@ export function MarketsDashboard() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [positions, setPositions] = useState<OpenPosition[]>([]);
+  const [positionsErr, setPositionsErr] = useState<string | null>(null);
+  const [enteringSymbol, setEnteringSymbol] = useState<string | null>(null);
+  const [exitingId, setExitingId] = useState<number | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [optRight, setOptRight] = useState<OptionRight>("call");
@@ -112,6 +136,64 @@ export function MarketsDashboard() {
     }
   }
 
+  async function refreshPositions() {
+    try {
+      const data = await fetchJson<PositionsResponse>("/api/positions", {
+        cache: "no-store",
+      });
+      setPositions(data.positions);
+      setPositionsErr(null);
+    } catch (e) {
+      setPositionsErr(
+        e instanceof Error ? e.message : "Failed to load positions",
+      );
+      setPositions([]);
+    }
+  }
+
+  async function enterPosition(opts: {
+    symbol: string;
+    side: PositionSide;
+    meta?: Record<string, unknown>;
+  }) {
+    setEnteringSymbol(opts.symbol);
+    setPositionsErr(null);
+    try {
+      await fetchJson("/api/positions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol: opts.symbol,
+          side: opts.side,
+          notional: 1000,
+          meta: opts.meta,
+        }),
+      });
+    } catch (e) {
+      setPositionsErr(e instanceof Error ? e.message : "Failed to enter position");
+    } finally {
+      setEnteringSymbol(null);
+      await refreshPositions();
+    }
+  }
+
+  async function exitPosition(id: number) {
+    setExitingId(id);
+    setPositionsErr(null);
+    try {
+      await fetchJson(`/api/positions/${id}/close`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+    } catch (e) {
+      setPositionsErr(e instanceof Error ? e.message : "Failed to exit position");
+    } finally {
+      setExitingId(null);
+      await refreshPositions();
+    }
+  }
+
   async function syncNow() {
     setSyncing(true);
     try {
@@ -121,17 +203,21 @@ export function MarketsDashboard() {
     } finally {
       setSyncing(false);
       await refresh();
+      await refreshPositions();
     }
   }
 
   useEffect(() => {
     let alive = true;
-    void refresh().finally(() => {
+    void Promise.all([refresh(), refreshPositions()]).finally(() => {
       if (!alive) return;
       setLoading(false);
     });
 
-    const refreshId = window.setInterval(() => void refresh(), 10_000);
+    const refreshId = window.setInterval(() => {
+      void refresh();
+      void refreshPositions();
+    }, 10_000);
     const syncId = window.setInterval(() => void syncNow(), 60_000);
 
     return () => {
@@ -170,7 +256,8 @@ export function MarketsDashboard() {
         const tail = r.tail_prob_24h;
         const sigma = r.realized_vol;
 
-        const direction = z >= 0 ? "Short" : "Long";
+        const side: PositionSide = z >= 0 ? "short" : "long";
+        const direction = side === "short" ? "Short" : "Long";
         const style =
           abs >= 2.5
             ? "Fade extreme move"
@@ -214,7 +301,7 @@ export function MarketsDashboard() {
           },
         ];
 
-        return { symbol: r.symbol, title, subtitle, rationale, stats };
+        return { symbol: r.symbol, side, title, subtitle, rationale, stats };
       });
 
     return candidates;
@@ -264,8 +351,113 @@ export function MarketsDashboard() {
     };
   }, [chartRowSymbol, chartRowMid, chartRowVol]);
 
+  const hasOpenBySymbol = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of positions) set.add(p.symbol);
+    return set;
+  }, [positions]);
+
   return (
     <main className="space-y-8">
+      <Card className="p-0">
+        <div className="flex items-center justify-between px-6 py-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">Open positions</p>
+            <p className="text-xs text-muted">
+              Local position tracker (mark-to-market off Hyperliquid mids).
+            </p>
+          </div>
+          <p className="text-xs text-muted">
+            {positions.length ? `${positions.length} open` : "none"}
+          </p>
+        </div>
+
+        {positionsErr ? (
+          <div className="px-6 pb-4 text-sm text-danger">{positionsErr}</div>
+        ) : null}
+
+        {positions.length === 0 ? (
+          <div className="border-t border-border/60 px-6 py-5">
+            <p className="text-sm text-muted">
+              No open positions yet. Use “Enter position” on a recommendation to
+              start tracking.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto border-t border-border/60">
+            <table className="w-full border-separate border-spacing-0">
+              <thead className="text-left text-xs text-muted">
+                <tr>
+                  <th className="px-6 py-3 font-medium">Asset</th>
+                  <th className="px-6 py-3 font-medium">Side</th>
+                  <th className="px-6 py-3 font-medium">Entry</th>
+                  <th className="px-6 py-3 font-medium">Current</th>
+                  <th className="px-6 py-3 font-medium">Value</th>
+                  <th className="px-6 py-3 font-medium">Exit</th>
+                </tr>
+              </thead>
+              <tbody className="text-sm">
+                {positions.map((p) => {
+                  const tone =
+                    p.side === "long" ? "text-success" : "text-danger";
+                  const pnlTone =
+                    p.pnl === null
+                      ? "text-muted"
+                      : p.pnl >= 0
+                        ? "text-success"
+                        : "text-danger";
+                  return (
+                    <tr key={p.id} className="hover:bg-background/40">
+                      <td className="border-t border-border/60 px-6 py-3 font-mono text-foreground">
+                        {p.symbol}
+                      </td>
+                      <td
+                        className={[
+                          "border-t border-border/60 px-6 py-3 font-mono",
+                          tone,
+                        ].join(" ")}
+                      >
+                        {p.side.toUpperCase()}
+                      </td>
+                      <td className="border-t border-border/60 px-6 py-3 font-mono text-foreground">
+                        {formatPx(p.entry_px)}
+                      </td>
+                      <td className="border-t border-border/60 px-6 py-3 font-mono text-foreground">
+                        {p.current_px === null ? "—" : formatPx(p.current_px)}
+                      </td>
+                      <td className="border-t border-border/60 px-6 py-3">
+                        <p className="font-mono text-foreground">
+                          {p.value === null ? "—" : formatCompact(p.value)}
+                        </p>
+                        <p
+                          className={[
+                            "mt-1 text-[11px] font-mono",
+                            pnlTone,
+                          ].join(" ")}
+                        >
+                          {p.pnl === null
+                            ? "pnl —"
+                            : `pnl ${formatCompact(p.pnl)} (${p.pnl_pct === null ? "—" : formatPercent(p.pnl_pct)})`}
+                        </p>
+                      </td>
+                      <td className="border-t border-border/60 px-6 py-3">
+                        <Button
+                          variant="ghost"
+                          disabled={exitingId === p.id}
+                          onClick={() => void exitPosition(p.id)}
+                        >
+                          {exitingId === p.id ? "Exiting..." : "Exit"}
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-2">
           <h1 className="font-display text-4xl tracking-tight text-foreground">
@@ -355,6 +547,29 @@ export function MarketsDashboard() {
                     </p>
                   </div>
                 ))}
+              </div>
+
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <Button
+                  variant="soft"
+                  disabled={
+                    enteringSymbol === rec.symbol || hasOpenBySymbol.has(rec.symbol)
+                  }
+                  onClick={() =>
+                    void enterPosition({
+                      symbol: rec.symbol,
+                      side: rec.side,
+                      meta: { source: "recommendation", subtitle: rec.subtitle },
+                    })
+                  }
+                >
+                  {hasOpenBySymbol.has(rec.symbol)
+                    ? "Position open"
+                    : enteringSymbol === rec.symbol
+                      ? "Entering..."
+                      : "Enter position"}
+                </Button>
+                <p className="text-xs text-muted">$1,000 notional</p>
               </div>
             </Card>
           ))}

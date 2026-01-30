@@ -41,3 +41,18 @@ export async function logWalletEvent(req: Request, line: LogLine) {
   }
 }
 
+export async function logTradeEvent(req: Request, line: LogLine) {
+  const meta: LogLine = {
+    ts: Date.now(),
+    host: req.headers.get("host"),
+    ip: clientIp(req),
+    ua: req.headers.get("user-agent"),
+    ...line,
+  };
+
+  try {
+    await appendJsonLine("trade.log", meta);
+  } catch {
+    // Logging must never break core functionality.
+  }
+}

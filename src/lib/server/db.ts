@@ -82,6 +82,25 @@ function ensureSchema(db: DatabaseSync) {
       ret_24h REAL
     );
 
+    CREATE TABLE IF NOT EXISTS positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL CHECK(side IN ('long','short')),
+      notional REAL NOT NULL,
+      qty REAL NOT NULL,
+      entry_px REAL NOT NULL,
+      entry_ts INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+      exit_px REAL,
+      exit_ts INTEGER,
+      closed_pnl REAL,
+      meta_json TEXT,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_positions_status_updated_at
+      ON positions(status, updated_at DESC);
+
     CREATE INDEX IF NOT EXISTS idx_market_metrics_day_ntl_vlm
       ON market_metrics_latest(day_ntl_vlm DESC);
   `);
