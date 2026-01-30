@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #faf7f2;
+  --fg: #0b1320;
+  --muted: #51606f;
+  --card: rgba(255, 255, 255, 0.72);
+  --border: rgba(15, 23, 42, 0.12);
+  --shadow: 0 18px 50px rgba(11, 19, 32, 0.12);
+
+  --accent: #0f766e;
+  --accent2: #d97706;
+
+  --danger: #b91c1c;
+  --success: #047857;
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-muted: var(--muted);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent2: var(--accent2);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+
+  --font-display: var(--font-fraunces);
+  --font-sans: var(--font-space-grotesk);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #070b12;
+    --fg: #e7edf5;
+    --muted: #9aa8ba;
+    --card: rgba(255, 255, 255, 0.06);
+    --border: rgba(231, 237, 245, 0.1);
+    --shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
+
+    --accent: #2dd4bf;
+    --accent2: #f59e0b;
+
+    --danger: #f87171;
+    --success: #34d399;
+  }
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  text-rendering: geometricPrecision;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--accent) 25%, transparent);
+  color: var(--fg);
+}
+
+@keyframes floaty {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -14px, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
