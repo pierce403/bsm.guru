@@ -5,11 +5,13 @@ import { useEffect, useMemo, useState } from "react";
 import { PayoffProbabilityChart } from "@/components/charts/PayoffProbabilityChart";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Select } from "@/components/ui/Select";
 import { bsmPrice, impliedVol, type OptionRight } from "@/lib/quant/bsm";
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
+const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeEth.";
 
 type SummaryRow = {
   symbol: string;
@@ -60,16 +62,6 @@ type WalletRow = {
 };
 
 type WalletsResponse = { ts: number; wallets: WalletRow[] } | { error: string };
-
-type BalanceResponse =
-  | {
-      ts: number;
-      address: string;
-      balanceEth: string;
-      balanceWei: string;
-      chainId: number;
-    }
-  | { error: string };
 
 type MidsResponse = { ts: number; mids: Record<string, string> };
 
@@ -168,7 +160,8 @@ export function MarketsDashboard() {
   const [optLoading, setOptLoading] = useState(false);
   const [optErr, setOptErr] = useState<string | null>(null);
   const [activeWallet, setActiveWallet] = useState<string | null>(null);
-  const [walletBalanceEth, setWalletBalanceEth] = useState<number | null>(null);
+  const [walletFreeEth, setWalletFreeEth] = useState<number | null>(null);
+  const [walletFreeEthText, setWalletFreeEthText] = useState("");
   const [walletErr, setWalletErr] = useState<string | null>(null);
   const [ethUsd, setEthUsd] = useState<number | null>(null);
   const [enterRec, setEnterRec] = useState<Recommendation | null>(null);
@@ -258,23 +251,6 @@ export function MarketsDashboard() {
     }
   }
 
-  async function refreshWalletBalance(address: string) {
-    try {
-      const data = await fetchJsonNoThrow<BalanceResponse>(
-        `/api/base/balance/${address}`,
-        { cache: "no-store" },
-      );
-      if ("error" in data) {
-        setWalletBalanceEth(null);
-        return;
-      }
-      const n = Number(data.balanceEth);
-      setWalletBalanceEth(Number.isFinite(n) ? n : null);
-    } catch {
-      setWalletBalanceEth(null);
-    }
-  }
-
   async function enterPosition(opts: {
     symbol: string;
     side: PositionSide;
@@ -359,24 +335,25 @@ export function MarketsDashboard() {
 
   useEffect(() => {
     void refreshEthPrice();
-    void refreshWalletSelection().then((addr) => {
-      if (addr) void refreshWalletBalance(addr);
-    });
+    void refreshWalletSelection();
   }, []);
 
   useEffect(() => {
     if (!activeWallet) {
-      setWalletBalanceEth(null);
+      setWalletFreeEth(null);
+      setWalletFreeEthText("");
       return;
     }
 
-    void refreshWalletBalance(activeWallet);
-    const id = window.setInterval(
-      () => void refreshWalletBalance(activeWallet),
-      15_000,
-    );
-
-    return () => window.clearInterval(id);
+    try {
+      const raw = window.localStorage.getItem(`${FREE_FUNDS_LS_PREFIX}${activeWallet}`);
+      const n = raw === null ? NaN : Number(raw);
+      setWalletFreeEthText(raw ?? "");
+      setWalletFreeEth(Number.isFinite(n) && n >= 0 ? n : null);
+    } catch {
+      setWalletFreeEth(null);
+      setWalletFreeEthText("");
+    }
   }, [activeWallet]);
 
   useEffect(() => {
@@ -749,9 +726,7 @@ export function MarketsDashboard() {
                     setEnterErr(null);
                     setEnterRec(rec);
                     void refreshEthPrice();
-                    void refreshWalletSelection().then((addr) => {
-                      if (addr) void refreshWalletBalance(addr);
-                    });
+                    void refreshWalletSelection();
                   }}
                 >
                   {hasOpenBySymbol.has(rec.symbol)
@@ -911,7 +886,7 @@ export function MarketsDashboard() {
           const row = rows.find((r) => r.symbol === enterRec.symbol) ?? null;
           const spot = row?.mid ?? null;
 
-          const freeEth = walletBalanceEth;
+          const freeEth = walletFreeEth;
           const pct = Math.min(Math.max(enterPct, 0), 100) / 100;
           const allocEth = freeEth === null ? null : freeEth * pct;
 
@@ -950,12 +925,42 @@ export function MarketsDashboard() {
                     ) : null}
                   </div>
                   <div className="space-y-1 text-right">
-                    <p className="text-xs font-medium text-muted">Free funds</p>
-                    <p className="font-mono text-sm text-foreground">
-                      {freeEth === null ? "—" : `${formatEth(freeEth)} ETH`}
+                    <p className="text-xs font-medium text-muted">
+                      Free funds (ETH, manual)
                     </p>
+                    <div className="flex justify-end">
+                      <div className="w-32">
+                        <Input
+                          inputMode="decimal"
+                          placeholder="0.0"
+                          value={walletFreeEthText}
+                          disabled={!activeWallet}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            setWalletFreeEthText(next);
+
+                            const trimmed = next.trim();
+                            const n = trimmed.length === 0 ? null : Number(trimmed);
+                            const ok = n !== null && Number.isFinite(n) && n >= 0;
+                            setWalletFreeEth(ok ? n : null);
+
+                            if (!activeWallet) return;
+                            try {
+                              const key = `${FREE_FUNDS_LS_PREFIX}${activeWallet}`;
+                              if (ok) window.localStorage.setItem(key, String(n));
+                              else window.localStorage.removeItem(key);
+                            } catch {
+                              // ignore
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
                     <p className="text-[11px] font-mono text-muted">
                       ETH/USD {ethUsd === null ? "—" : `$${formatPx(ethUsd)}`}
+                    </p>
+                    <p className="text-[11px] text-muted">
+                      Stored in localStorage (until on-chain sizing lands).
                     </p>
                   </div>
                 </div>

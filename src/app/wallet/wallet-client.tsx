@@ -5,7 +5,6 @@ import QRCode from "react-qr-code";
 
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 
 type WalletRow = {
@@ -15,46 +14,7 @@ type WalletRow = {
 };
 
 type ListResponse = { ts: number; wallets: WalletRow[] } | { error: string };
-
 type CreateResponse = { ts: number; wallet: WalletRow } | { error: string };
-
-type BalanceResponse =
-  | {
-      ts: number;
-      address: string;
-      balanceEth: string;
-      balanceWei: string;
-      chainId: number;
-    }
-  | { error: string };
-
-type TxRow = {
-  hash: string;
-  ts: number;
-  from: string;
-  to: string;
-  valueWei: string;
-  valueEth: string;
-  ok: boolean;
-};
-
-type TxsResponse =
-  | { ts: number; address: string; explorer: string; txs: TxRow[] }
-  | { error: string };
-
-type WithdrawTx = {
-  chainId: number;
-  from: string;
-  to: string;
-  valueWei: string;
-  valueEth: string;
-  gasLimit: string;
-  feePerGasWei: string;
-  l1FeeWei: string;
-  txHash: string;
-};
-
-type WithdrawResponse = { ts: number; tx: WithdrawTx } | { error: string };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -62,8 +22,6 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
-const WITHDRAW_TO_LS_KEY = "bsm.withdrawToBase";
-const PASSWORD_LS_PREFIX = "bsm.walletPassword.";
 
 function formatTs(ts: number) {
   try {
@@ -78,65 +36,28 @@ function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function formatEth(eth: string) {
-  const n = Number(eth);
-  if (!Number.isFinite(n)) return eth;
-  if (n === 0) return "0";
-  if (n < 0.0001) return n.toFixed(6);
-  if (n < 1) return n.toFixed(4);
-  return n.toFixed(4);
-}
-
-function isBalanceOk(
-  b: BalanceResponse | undefined,
-): b is Extract<BalanceResponse, { balanceEth: string }> {
-  return !!b && !("error" in b);
-}
-
 export function WalletClient() {
   const [wallets, setWallets] = useState<WalletRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const [created, setCreated] = useState<WalletRow | null>(null);
 
   const [selected, setSelected] = useState<string | null>(null);
-  const [balances, setBalances] = useState<Record<string, BalanceResponse>>({});
-  const [txs, setTxs] = useState<TxRow[]>([]);
-  const [txLoading, setTxLoading] = useState(false);
-  const [qrMode, setQrMode] = useState<"arbitrum" | "base" | null>(null);
-
-  const [withdrawOpen, setWithdrawOpen] = useState(false);
-  const [withdrawTo, setWithdrawTo] = useState("");
-  const [withdrawPassword, setWithdrawPassword] = useState("");
-  const [withdrawing, setWithdrawing] = useState(false);
-  const [withdrawErr, setWithdrawErr] = useState<string | null>(null);
-  const [withdrawTx, setWithdrawTx] = useState<WithdrawTx | null>(null);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const selectedWallet = useMemo(
     () => wallets.find((w) => w.address === selected) ?? null,
     [wallets, selected],
   );
 
-  const selectedBalance = useMemo(() => {
+  const fundUri = useMemo(() => {
     if (!selectedWallet) return null;
-    const b = balances[selectedWallet.address];
-    return isBalanceOk(b) ? b : null;
-  }, [balances, selectedWallet]);
-
-  const fundUriArbitrum = useMemo(() => {
-    if (!selectedWallet) return null;
-    // EIP-681-ish. Some wallets ignore the chainId, but it helps when supported.
+    // EIP-681-ish. Many wallets will treat this as "send ETH" on the given chain.
+    // For Hyperliquid funding, users typically send USDC on Arbitrum to this EOA.
     return `ethereum:${selectedWallet.address}@42161`;
   }, [selectedWallet]);
-
-  const fundUriBase = useMemo(() => {
-    if (!selectedWallet) return null;
-    return `ethereum:${selectedWallet.address}@8453`;
-  }, [selectedWallet]);
-
-  const fundUri = qrMode === "arbitrum" ? fundUriArbitrum : fundUriBase;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -167,46 +88,6 @@ export function WalletClient() {
     setLoading(false);
   }, []);
 
-  const loadBalances = useCallback(async (addrs: string[]) => {
-    if (addrs.length === 0) return;
-
-    const results = await Promise.allSettled(
-      addrs.map(async (a) => {
-        const r = await fetchJson<BalanceResponse>(`/api/base/balance/${a}`, {
-          cache: "no-store",
-        });
-        return [a, r] as const;
-      }),
-    );
-
-    setBalances((prev) => {
-      const next = { ...prev };
-      for (const r of results) {
-        if (r.status === "fulfilled") {
-          const [addr, data] = r.value;
-          next[addr] = data;
-        }
-      }
-      return next;
-    });
-  }, []);
-
-  const loadTxs = useCallback(async (address: string) => {
-    setTxLoading(true);
-    const data = await fetchJson<TxsResponse>(
-      `/api/base/txs/${address}?limit=25`,
-      { cache: "no-store" },
-    );
-
-    if ("error" in data) {
-      setTxs([]);
-    } else {
-      setTxs(data.txs);
-    }
-
-    setTxLoading(false);
-  }, []);
-
   const create = useCallback(async () => {
     setCreating(true);
     setCreated(null);
@@ -226,38 +107,14 @@ export function WalletClient() {
       setCreated(data.wallet);
       setSelected(data.wallet.address);
       await refresh();
-      await loadBalances([data.wallet.address]);
-      await loadTxs(data.wallet.address);
     } finally {
       setCreating(false);
     }
-  }, [loadBalances, loadTxs, refresh]);
+  }, [refresh]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(WITHDRAW_TO_LS_KEY);
-      if (saved) setWithdrawTo(saved);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      if (withdrawTo.trim()) window.localStorage.setItem(WITHDRAW_TO_LS_KEY, withdrawTo.trim());
-    } catch {
-      // ignore
-    }
-  }, [withdrawTo]);
-
-  useEffect(() => {
-    if (wallets.length === 0) return;
-    void loadBalances(wallets.map((w) => w.address));
-  }, [wallets, loadBalances]);
 
   useEffect(() => {
     if (!selected) return;
@@ -266,69 +123,24 @@ export function WalletClient() {
     } catch {
       // ignore
     }
-    try {
-      const saved = window.localStorage.getItem(`${PASSWORD_LS_PREFIX}${selected}`);
-      setWithdrawPassword(saved ?? "");
-    } catch {
-      setWithdrawPassword("");
-    }
-    void loadBalances([selected]);
-    void loadTxs(selected);
-
-    const balId = window.setInterval(() => void loadBalances([selected]), 15_000);
-    const txId = window.setInterval(() => void loadTxs(selected), 30_000);
-
-    return () => {
-      window.clearInterval(balId);
-      window.clearInterval(txId);
-    };
-  }, [selected, loadBalances, loadTxs]);
+  }, [selected]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!copied) return;
+    const id = window.setTimeout(() => setCopied(false), 1200);
+    return () => window.clearTimeout(id);
+  }, [copied]);
+
+  const copyAddress = useCallback(async () => {
+    const addr = selectedWallet?.address;
+    if (!addr) return;
     try {
-      const key = `${PASSWORD_LS_PREFIX}${selected}`;
-      if (withdrawPassword.trim().length > 0) {
-        window.localStorage.setItem(key, withdrawPassword);
-      } else {
-        window.localStorage.removeItem(key);
-      }
+      await navigator.clipboard.writeText(addr);
+      setCopied(true);
     } catch {
       // ignore
     }
-  }, [selected, withdrawPassword]);
-
-  const withdrawAll = useCallback(async () => {
-    if (!selectedWallet) return;
-    setWithdrawing(true);
-    setWithdrawErr(null);
-    setWithdrawTx(null);
-
-    try {
-      const data = await fetchJson<WithdrawResponse>("/api/base/withdraw", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          fromAddress: selectedWallet.address,
-          toAddress: withdrawTo.trim(),
-          password: withdrawPassword.trim() || undefined,
-        }),
-      });
-
-      if ("error" in data) {
-        setWithdrawErr(data.error);
-        return;
-      }
-
-      setWithdrawTx(data.tx);
-      await loadBalances([selectedWallet.address]);
-      await loadTxs(selectedWallet.address);
-    } catch (e) {
-      setWithdrawErr(e instanceof Error ? e.message : "Withdraw failed");
-    } finally {
-      setWithdrawing(false);
-    }
-  }, [loadBalances, loadTxs, selectedWallet, withdrawPassword, withdrawTo]);
+  }, [selectedWallet]);
 
   return (
     <main className="space-y-6">
@@ -337,13 +149,13 @@ export function WalletClient() {
           Wallet
         </h1>
         <p className="max-w-2xl text-base leading-7 text-muted">
-          Local, custodial keystore management. Wallets are generated server-side
-          and written to disk; you can download an encrypted backup JSON.
+          Local, custodial wallet management for Hyperliquid. Wallets are
+          generated server-side and written to disk; you can download a backup
+          JSON.
         </p>
         <p className="max-w-2xl text-xs leading-6 text-muted">
-          Do not expose this app to the internet. This app is designed for a
-          local, secure environment and treats wallets as hot. If you set a
-          password on a wallet, it can be cached locally for automation.
+          This app is designed for a local, secure environment. Treat these as
+          hot wallets.
         </p>
       </header>
 
@@ -360,18 +172,14 @@ export function WalletClient() {
 
       <div className="grid gap-6 lg:grid-cols-12">
         <div className="space-y-6 lg:col-span-5">
-          <Card className="space-y-5">
+          <Card className="space-y-4">
             <p className="text-sm font-medium text-foreground">Create wallet</p>
-
-            <Button
-              disabled={creating}
-              onClick={() => void create()}
-            >
+            <Button disabled={creating} onClick={() => void create()}>
               {creating ? "Creating..." : "Generate wallet"}
             </Button>
             <p className="text-xs text-muted">
-              Wallets are created without a password by default (hot wallet).
-              Download a backup JSON and store it safely.
+              Download a backup JSON and store it safely. If you lose the file,
+              you lose the wallet.
             </p>
           </Card>
 
@@ -379,10 +187,12 @@ export function WalletClient() {
             <div className="flex items-center justify-between px-6 py-4">
               <div>
                 <p className="text-sm font-medium text-foreground">Wallets</p>
-                <p className="text-xs text-muted">Click to view details.</p>
+                <p className="text-xs text-muted">
+                  Click to select; download to backup.
+                </p>
               </div>
               <p className="text-xs text-muted">
-                {loading ? "Loading…" : `${wallets.length} found`}
+                {loading ? "Loading…" : `${wallets.length} wallets`}
               </p>
             </div>
 
@@ -394,7 +204,7 @@ export function WalletClient() {
                       Address
                     </th>
                     <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Balance
+                      Created
                     </th>
                     <th className="border-t border-border/60 px-6 py-3 font-medium">
                       Backup
@@ -403,13 +213,7 @@ export function WalletClient() {
                 </thead>
                 <tbody className="text-sm">
                   {wallets.map((w) => {
-                    const bal = balances[w.address];
-                    const balText =
-                      !bal || "error" in bal
-                        ? "—"
-                        : `${formatEth(bal.balanceEth)} ETH`;
                     const isSelected = selected === w.address;
-
                     return (
                       <tr
                         key={w.address}
@@ -423,7 +227,7 @@ export function WalletClient() {
                           {shortAddr(w.address)}
                         </td>
                         <td className="border-t border-border/60 px-6 py-3 font-mono text-muted">
-                          {balText}
+                          {formatTs(w.createdAt)}
                         </td>
                         <td className="border-t border-border/60 px-6 py-3">
                           <a
@@ -480,230 +284,62 @@ export function WalletClient() {
               ) : null}
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div className="rounded-2xl bg-background/60 p-4 ring-1 ring-border/80">
-                <p className="text-xs font-medium text-muted">Network</p>
-                <p className="mt-1 font-mono text-lg text-foreground">Base</p>
-                <p className="mt-1 text-xs text-muted">chainId 8453</p>
-              </div>
-              <div className="rounded-2xl bg-background/60 p-4 ring-1 ring-border/80">
-                <p className="text-xs font-medium text-muted">Balance</p>
-                <p className="mt-1 font-mono text-lg text-foreground">
-                  {selectedBalance ? `${formatEth(selectedBalance.balanceEth)} ETH` : "—"}
-                </p>
-                <p className="mt-1 text-xs text-muted">auto-refreshing</p>
-              </div>
-              <div className="rounded-2xl bg-background/60 p-4 ring-1 ring-border/80">
-                <p className="text-xs font-medium text-muted">Explorer</p>
-                {selectedWallet ? (
-                  <a
-                    href={`https://base.blockscout.com/address/${selectedWallet.address}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-flex font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                  >
-                    View address
-                  </a>
-                ) : (
-                  <p className="mt-1 font-mono text-sm text-muted">—</p>
-                )}
-              </div>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <button
-                type="button"
-                className="group flex w-full items-center justify-between rounded-3xl bg-background/60 p-4 ring-1 ring-border/80 transition hover:bg-background/70"
-                onClick={() => setQrMode("arbitrum")}
-                disabled={!fundUriArbitrum}
-              >
-                <div className="space-y-1 text-left">
-                  <p className="text-xs font-medium text-muted">
-                    Fund for Hyperliquid
-                  </p>
-                  <p className="text-sm text-muted">Arbitrum (USDC) • click QR</p>
-                </div>
-                <div className="rounded-2xl bg-white p-3 shadow">
-                  {fundUriArbitrum ? (
-                    <QRCode value={fundUriArbitrum} size={96} />
-                  ) : (
-                    <div className="h-24 w-24" />
-                  )}
-                </div>
-              </button>
-
-              <button
-                type="button"
-                className="group flex w-full items-center justify-between rounded-3xl bg-background/60 p-4 ring-1 ring-border/80 transition hover:bg-background/70"
-                onClick={() => setQrMode("base")}
-                disabled={!fundUriBase}
-              >
-                <div className="space-y-1 text-left">
-                  <p className="text-xs font-medium text-muted">Fund on Base</p>
-                  <p className="text-sm text-muted">ETH • click QR</p>
-                </div>
-                <div className="rounded-2xl bg-white p-3 shadow">
-                  {fundUriBase ? <QRCode value={fundUriBase} size={96} /> : <div className="h-24 w-24" />}
-                </div>
-              </button>
-            </div>
-
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
-                <p className="text-xs font-medium text-muted">Funding note</p>
+                <p className="text-xs font-medium text-muted">Funding</p>
                 <p className="mt-2 text-sm leading-6 text-muted">
-                  Hyperliquid perp accounts are typically funded with{" "}
-                  <span className="font-medium text-foreground">USDC on Arbitrum</span>{" "}
-                  using the same EOA address. Base ETH is optional (useful for
-                  Base-only experiments / bridging / housekeeping).
+                  Hyperliquid accounts are typically funded with{" "}
+                  <span className="font-medium text-foreground">
+                    USDC on Arbitrum
+                  </span>{" "}
+                  using this same EOA address.
                 </p>
-              </div>
-
-              <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-muted">Withdraw</p>
-                    <p className="text-sm text-muted">
-                      Send all Base ETH (minus gas) to a Base address.
-                    </p>
-                  </div>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
                   <Button
                     variant="ghost"
                     disabled={!selectedWallet}
-                    onClick={() => {
-                      setWithdrawErr(null);
-                      setWithdrawTx(null);
-                      setWithdrawOpen(true);
-                    }}
+                    onClick={() => void copyAddress()}
                   >
-                    Withdraw all
+                    {copied ? "Copied" : "Copy address"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet}
+                    onClick={() => setQrOpen(true)}
+                  >
+                    Show QR
                   </Button>
                 </div>
               </div>
-            </div>
-          </Card>
 
-          <Card className="p-0">
-            <div className="flex items-center justify-between px-6 py-4">
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  Transaction history
-                </p>
-                <p className="text-xs text-muted">
-                  Pulled from the Base explorer API.
-                </p>
-              </div>
-              <p className="text-xs text-muted">
-                {txLoading ? "Loading…" : `${txs.length} txs`}
-              </p>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full border-separate border-spacing-0">
-                <thead className="text-left text-xs text-muted">
-                  <tr>
-                    <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Time
-                    </th>
-                    <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Dir
-                    </th>
-                    <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Counterparty
-                    </th>
-                    <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Value
-                    </th>
-                    <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Status
-                    </th>
-                    <th className="border-t border-border/60 px-6 py-3 font-medium">
-                      Tx
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm">
-                  {txs.map((tx) => {
-                    const me = selectedWallet?.address?.toLowerCase() ?? "";
-                    const fromMe = tx.from.toLowerCase() === me;
-                    const counterparty = fromMe ? tx.to : tx.from;
-                    return (
-                      <tr key={tx.hash} className="hover:bg-background/40">
-                        <td className="border-t border-border/60 px-6 py-3 text-muted">
-                          {formatTs(tx.ts)}
-                        </td>
-                        <td
-                          className={[
-                            "border-t border-border/60 px-6 py-3 font-mono",
-                            fromMe ? "text-danger" : "text-success",
-                          ].join(" ")}
-                        >
-                          {fromMe ? "OUT" : "IN"}
-                        </td>
-                        <td className="border-t border-border/60 px-6 py-3 font-mono text-muted">
-                          {shortAddr(counterparty)}
-                        </td>
-                        <td className="border-t border-border/60 px-6 py-3 font-mono text-foreground">
-                          {formatEth(tx.valueEth)} ETH
-                        </td>
-                        <td
-                          className={[
-                            "border-t border-border/60 px-6 py-3 font-mono",
-                            tx.ok ? "text-success" : "text-danger",
-                          ].join(" ")}
-                        >
-                          {tx.ok ? "OK" : "FAIL"}
-                        </td>
-                        <td className="border-t border-border/60 px-6 py-3">
-                          <a
-                            href={`https://base.blockscout.com/tx/${tx.hash}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                          >
-                            {tx.hash.slice(0, 10)}…
-                          </a>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {!txLoading && selectedWallet && txs.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="border-t border-border/60 px-6 py-6 text-sm text-muted"
-                      >
-                        No transactions yet.
-                      </td>
-                    </tr>
-                  ) : null}
-
-                  {!selectedWallet ? (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="border-t border-border/60 px-6 py-6 text-sm text-muted"
-                      >
-                        Select a wallet to view its history.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
+              <button
+                type="button"
+                className="group flex w-full items-center justify-between rounded-3xl bg-background/60 p-4 ring-1 ring-border/80 transition hover:bg-background/70"
+                onClick={() => setQrOpen(true)}
+                disabled={!fundUri}
+              >
+                <div className="space-y-1 text-left">
+                  <p className="text-xs font-medium text-muted">Deposit address</p>
+                  <p className="text-sm text-muted">Arbitrum • click QR</p>
+                </div>
+                <div className="rounded-2xl bg-white p-3 shadow">
+                  {fundUri ? <QRCode value={fundUri} size={96} /> : <div className="h-24 w-24" />}
+                </div>
+              </button>
             </div>
           </Card>
         </div>
       </div>
 
-      <Modal open={qrMode !== null} onClose={() => setQrMode(null)} title="Fund wallet">
+      <Modal
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+        title="Fund wallet (Arbitrum)"
+      >
         <div className="space-y-4">
           <p className="text-sm text-muted">
             Scan to fund this wallet on{" "}
-            <span className="font-medium text-foreground">
-              {qrMode === "arbitrum" ? "Arbitrum" : "Base"}
-            </span>
-            :
+            <span className="font-medium text-foreground">Arbitrum One</span>.
           </p>
           <p className="break-all rounded-2xl bg-background/60 p-3 font-mono text-xs text-foreground ring-1 ring-border/80">
             {selectedWallet?.address ?? "—"}
@@ -712,101 +348,14 @@ export function WalletClient() {
             {fundUri ? <QRCode value={fundUri} size={320} /> : null}
           </div>
           <p className="text-xs text-muted">
-            If your wallet app asks, choose{" "}
-            <span className="font-medium text-foreground">
-              {qrMode === "arbitrum" ? "Arbitrum One" : "Base"}
-            </span>
-            .
-          </p>
-        </div>
-      </Modal>
-
-      <Modal
-        open={withdrawOpen}
-        onClose={() => setWithdrawOpen(false)}
-        title="Withdraw all (Base ETH)"
-      >
-        <div className="space-y-5">
-          <p className="text-sm text-muted">
-            This sends the{" "}
-            <span className="font-medium text-foreground">entire Base ETH</span>{" "}
-            balance of the selected custodial wallet (minus gas) to your chosen
-            destination address.
-          </p>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted">
-              Destination (your Base wallet)
-            </label>
-            <Input
-              inputMode="text"
-              placeholder="0x…"
-              value={withdrawTo}
-              onChange={(e) => setWithdrawTo(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted">
-              Wallet password (optional)
-            </label>
-            <Input
-              type="password"
-              autoComplete="current-password"
-              value={withdrawPassword}
-              onChange={(e) => setWithdrawPassword(e.target.value)}
-              placeholder="Only needed for password-protected wallets"
-            />
-            <p className="text-xs text-muted">
-              If set, this password is cached in your browser localStorage for
-              automation.
-            </p>
-          </div>
-
-          {withdrawErr ? (
-            <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
-              {withdrawErr}
-            </div>
-          ) : null}
-
-          {withdrawTx ? (
-            <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
-              <p>
-                Sent <span className="font-mono text-foreground">{formatEth(withdrawTx.valueEth)} ETH</span>{" "}
-                to <span className="font-mono text-foreground">{shortAddr(withdrawTx.to)}</span>.
-              </p>
-              <p className="mt-2">
-                <a
-                  href={`https://base.blockscout.com/tx/${withdrawTx.txHash}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                >
-                  {withdrawTx.txHash.slice(0, 12)}…
-                </a>
-              </p>
-            </div>
-          ) : null}
-
-          <div className="flex items-center justify-end gap-3">
-            <Button variant="ghost" onClick={() => setWithdrawOpen(false)}>
-              Close
-            </Button>
-            <Button
-              disabled={withdrawing || !selectedWallet || withdrawTo.trim().length === 0}
-              onClick={() => void withdrawAll()}
-            >
-              {withdrawing ? "Withdrawing..." : "Withdraw all"}
-            </Button>
-          </div>
-
-          <p className="text-xs text-muted">
-            Tip: This is a plain ETH transfer on Base. If you accidentally funded
-            the wallet on Base but meant to fund Hyperliquid, withdraw and bridge
-            to Arbitrum.
+            Hyperliquid deposits are usually{" "}
+            <span className="font-medium text-foreground">USDC on Arbitrum</span>.
+            Some wallet apps may still label this as an ETH send request; in that
+            case, use the address above and choose USDC manually.
           </p>
         </div>
       </Modal>
     </main>
   );
 }
+

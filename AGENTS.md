@@ -46,8 +46,6 @@ pnpm build
   - `GET /api/markets/summary` -> `src/app/api/markets/summary/route.ts`
   - `GET/POST /api/wallets` -> `src/app/api/wallets/route.ts`
   - `GET /api/wallets/:address/keystore` -> `src/app/api/wallets/[address]/keystore/route.ts`
-  - `GET /api/base/balance/:address` -> `src/app/api/base/balance/[address]/route.ts`
-  - `GET /api/base/txs/:address` -> `src/app/api/base/txs/[address]/route.ts`
 - Hyperliquid client helpers: `src/lib/hyperliquid/info.ts`
 - Quant library:
   - Normal CDF/PDF: `src/lib/quant/normal.ts`
@@ -58,7 +56,6 @@ pnpm build
   - Local DB schema + access: `src/lib/server/db.ts`
   - Hyperliquid sync job: `src/lib/server/sync/hyperliquid.ts`
   - Wallet keystores on disk: `src/lib/server/wallets.ts`
-  - Base RPC/explorer helpers: `src/lib/server/base.ts`
 - UI primitives: `src/components/ui/*`
 
 ## Data Sources / Assumptions
@@ -115,6 +112,6 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 
 - 2026-01-29: Bootstrapped Next.js + TS + Tailwind; added BSM/IV/vol libs + tests; added Hyperliquid API routes; built Screener + Pricing pages; fixed Turbopack root + TS typeRoots pitfalls.
 - 2026-01-30: Added local SQLite DB + Hyperliquid sync job (API + run.sh background sync) and a homepage markets dashboard ranked by BSM/lognormal sigma-move imbalance.
-- 2026-01-30: Added custodial wallet feature (encrypted keystore files on disk + download endpoint + wallet UI). Wallet APIs are localhost-only by default.
-- 2026-01-30: Wallet page now shows Base balance, funding QR (enlargeable), and tx history via Blockscout; homepage shows top-3 heuristic recommendations that refresh with market data.
+- 2026-01-30: Added custodial wallet feature (keystore files on disk + download endpoint + wallet UI). Wallet APIs are localhost-only by default.
+- 2026-01-30: Wallet UI focuses on Hyperliquid-style funding (Arbitrum deposit address + QR); removed Base-specific wallet UX.
 - 2026-01-30: Added Veritasium-style probability-weighted payoff chart (PDF + EV density) per market via a modal on the dashboard table.

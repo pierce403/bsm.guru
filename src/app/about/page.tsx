@@ -21,11 +21,10 @@ export default function AboutPage() {
         </p>
         <p className="text-sm leading-6 text-muted">
           If you tell me which options venue you want to support (native
-          Hyperliquid, HyperEVM apps, or a specific protocol on Base), I can wire
-          the screener to live orderbooks.
+          Hyperliquid, HyperEVM apps, or another onchain/offchain venue), I can
+          wire the screener to live orderbooks.
         </p>
       </Card>
     </main>
   );
 }
-
