@@ -9,6 +9,8 @@ import { Modal } from "@/components/ui/Modal";
 import { Select } from "@/components/ui/Select";
 import { bsmPrice, impliedVol, type OptionRight } from "@/lib/quant/bsm";
 
+const WALLET_LS_KEY = "bsm.selectedWallet";
+
 type SummaryRow = {
   symbol: string;
   ts: number;
@@ -50,6 +52,26 @@ type AtmOptionSnapshot = {
 type AtmOptionResponse = { ts: number; snap: AtmOptionSnapshot | null };
 
 type PositionSide = "long" | "short";
+
+type WalletRow = {
+  address: string;
+  createdAt: number;
+  downloadUrl: string;
+};
+
+type WalletsResponse = { ts: number; wallets: WalletRow[] } | { error: string };
+
+type BalanceResponse =
+  | {
+      ts: number;
+      address: string;
+      balanceEth: string;
+      balanceWei: string;
+      chainId: number;
+    }
+  | { error: string };
+
+type MidsResponse = { ts: number; mids: Record<string, string> };
 
 type OpenPosition = {
   id: number;
@@ -111,6 +133,24 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function fetchJsonNoThrow<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  return (await res.json()) as T;
+}
+
+function shortAddr(addr: string) {
+  if (addr.length < 12) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function formatEth(n: number) {
+  if (!Number.isFinite(n)) return "—";
+  if (n === 0) return "0";
+  if (n < 0.0001) return n.toFixed(6);
+  if (n < 1) return n.toFixed(4);
+  return n.toFixed(4);
+}
+
 export function MarketsDashboard() {
   const [rows, setRows] = useState<SummaryRow[]>([]);
   const [lastSync, setLastSync] = useState<number | null>(null);
@@ -127,6 +167,13 @@ export function MarketsDashboard() {
   const [optSnap, setOptSnap] = useState<AtmOptionSnapshot | null>(null);
   const [optLoading, setOptLoading] = useState(false);
   const [optErr, setOptErr] = useState<string | null>(null);
+  const [activeWallet, setActiveWallet] = useState<string | null>(null);
+  const [walletBalanceEth, setWalletBalanceEth] = useState<number | null>(null);
+  const [walletErr, setWalletErr] = useState<string | null>(null);
+  const [ethUsd, setEthUsd] = useState<number | null>(null);
+  const [enterRec, setEnterRec] = useState<Recommendation | null>(null);
+  const [enterPct, setEnterPct] = useState(10);
+  const [enterErr, setEnterErr] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -158,12 +205,84 @@ export function MarketsDashboard() {
     }
   }
 
+  async function refreshEthPrice() {
+    try {
+      const data = await fetchJson<MidsResponse>("/api/hyperliquid/mids?coins=ETH", {
+        cache: "no-store",
+      });
+      const raw = data.mids.ETH;
+      const n = raw ? Number(raw) : NaN;
+      setEthUsd(Number.isFinite(n) ? n : null);
+    } catch {
+      setEthUsd(null);
+    }
+  }
+
+  async function refreshWalletSelection() {
+    try {
+      const data = await fetchJsonNoThrow<WalletsResponse>("/api/wallets", {
+        cache: "no-store",
+      });
+      if ("error" in data) {
+        setWalletErr(data.error);
+        setActiveWallet(null);
+        return null;
+      }
+
+      let selected: string | null = null;
+      try {
+        const saved = window.localStorage.getItem(WALLET_LS_KEY);
+        if (saved && data.wallets.some((w) => w.address === saved)) selected = saved;
+      } catch {
+        // ignore
+      }
+
+      if (!selected) selected = data.wallets[0]?.address ?? null;
+
+      setWalletErr(null);
+      setActiveWallet(selected);
+
+      if (selected) {
+        try {
+          window.localStorage.setItem(WALLET_LS_KEY, selected);
+        } catch {
+          // ignore
+        }
+      }
+
+      return selected;
+    } catch (e) {
+      setWalletErr(e instanceof Error ? e.message : "Failed to load wallets");
+      setActiveWallet(null);
+      return null;
+    }
+  }
+
+  async function refreshWalletBalance(address: string) {
+    try {
+      const data = await fetchJsonNoThrow<BalanceResponse>(
+        `/api/base/balance/${address}`,
+        { cache: "no-store" },
+      );
+      if ("error" in data) {
+        setWalletBalanceEth(null);
+        return;
+      }
+      const n = Number(data.balanceEth);
+      setWalletBalanceEth(Number.isFinite(n) ? n : null);
+    } catch {
+      setWalletBalanceEth(null);
+    }
+  }
+
   async function enterPosition(opts: {
     symbol: string;
     side: PositionSide;
+    notional: number;
     meta?: Record<string, unknown>;
   }) {
     setEnteringSymbol(opts.symbol);
+    setEnterErr(null);
     setPositionsErr(null);
     try {
       await fetchJson("/api/positions", {
@@ -172,12 +291,15 @@ export function MarketsDashboard() {
         body: JSON.stringify({
           symbol: opts.symbol,
           side: opts.side,
-          notional: 1000,
+          notional: opts.notional,
           meta: opts.meta,
         }),
       });
+      setEnterRec(null);
     } catch (e) {
-      setPositionsErr(e instanceof Error ? e.message : "Failed to enter position");
+      const msg = e instanceof Error ? e.message : "Failed to enter position";
+      setEnterErr(msg);
+      setPositionsErr(msg);
     } finally {
       setEnteringSymbol(null);
       await refreshPositions();
@@ -233,6 +355,34 @@ export function MarketsDashboard() {
       window.clearInterval(syncId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    void refreshEthPrice();
+    void refreshWalletSelection().then((addr) => {
+      if (addr) void refreshWalletBalance(addr);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!activeWallet) {
+      setWalletBalanceEth(null);
+      return;
+    }
+
+    void refreshWalletBalance(activeWallet);
+    const id = window.setInterval(
+      () => void refreshWalletBalance(activeWallet),
+      15_000,
+    );
+
+    return () => window.clearInterval(id);
+  }, [activeWallet]);
+
+  useEffect(() => {
+    void refreshEthPrice();
+    const id = window.setInterval(() => void refreshEthPrice(), 30_000);
+    return () => window.clearInterval(id);
   }, []);
 
   const ranked = useMemo(() => {
@@ -592,23 +742,23 @@ export function MarketsDashboard() {
                 <Button
                   variant="soft"
                   disabled={
-                    enteringSymbol === rec.symbol || hasOpenBySymbol.has(rec.symbol)
+                    enteringSymbol !== null || hasOpenBySymbol.has(rec.symbol)
                   }
-                  onClick={() =>
-                    void enterPosition({
-                      symbol: rec.symbol,
-                      side: rec.side,
-                      meta: { source: "recommendation", subtitle: rec.subtitle },
-                    })
-                  }
+                  onClick={() => {
+                    setEnterPct(10);
+                    setEnterErr(null);
+                    setEnterRec(rec);
+                    void refreshEthPrice();
+                    void refreshWalletSelection().then((addr) => {
+                      if (addr) void refreshWalletBalance(addr);
+                    });
+                  }}
                 >
                   {hasOpenBySymbol.has(rec.symbol)
                     ? "Position open"
-                    : enteringSymbol === rec.symbol
-                      ? "Entering..."
-                      : "Enter position"}
+                    : "Enter position"}
                 </Button>
-                <p className="text-xs text-muted">$1,000 notional</p>
+                <p className="text-xs text-muted">defaults to 10% of free ETH</p>
               </div>
             </Card>
           ))}
@@ -749,6 +899,193 @@ export function MarketsDashboard() {
           </table>
         </div>
       </Card>
+
+      <Modal
+        open={!!enterRec}
+        onClose={() => setEnterRec(null)}
+        title={
+          enterRec ? `Enter position: ${enterRec.title}` : "Enter position"
+        }
+      >
+        {!enterRec ? null : (() => {
+          const row = rows.find((r) => r.symbol === enterRec.symbol) ?? null;
+          const spot = row?.mid ?? null;
+
+          const freeEth = walletBalanceEth;
+          const pct = Math.min(Math.max(enterPct, 0), 100) / 100;
+          const allocEth = freeEth === null ? null : freeEth * pct;
+
+          const notionalUsd =
+            allocEth === null || ethUsd === null ? null : allocEth * ethUsd;
+
+          const qty =
+            notionalUsd === null || spot === null || spot <= 0
+              ? null
+              : notionalUsd / spot;
+
+          const canEnter =
+            activeWallet !== null &&
+            freeEth !== null &&
+            freeEth > 0 &&
+            ethUsd !== null &&
+            ethUsd > 0 &&
+            spot !== null &&
+            spot > 0 &&
+            notionalUsd !== null &&
+            notionalUsd > 0 &&
+            !hasOpenBySymbol.has(enterRec.symbol) &&
+            enteringSymbol === null;
+
+          return (
+            <div className="space-y-6">
+              <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-muted">Wallet</p>
+                    <p className="font-mono text-sm text-foreground">
+                      {activeWallet ? shortAddr(activeWallet) : "No wallet selected"}
+                    </p>
+                    {walletErr ? (
+                      <p className="text-xs text-danger">{walletErr}</p>
+                    ) : null}
+                  </div>
+                  <div className="space-y-1 text-right">
+                    <p className="text-xs font-medium text-muted">Free funds</p>
+                    <p className="font-mono text-sm text-foreground">
+                      {freeEth === null ? "—" : `${formatEth(freeEth)} ETH`}
+                    </p>
+                    <p className="text-[11px] font-mono text-muted">
+                      ETH/USD {ethUsd === null ? "—" : `$${formatPx(ethUsd)}`}
+                    </p>
+                  </div>
+                </div>
+
+                {!activeWallet ? (
+                  <p className="mt-3 text-xs text-muted">
+                    Create/select a wallet on the{" "}
+                    <a
+                      href="/wallet"
+                      className="font-medium text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                    >
+                      Wallet
+                    </a>{" "}
+                    page to fund and size positions.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="space-y-4 rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+                <div className="flex items-end justify-between gap-6">
+                  <div>
+                    <p className="text-xs font-medium text-muted">
+                      Allocation (% of free ETH)
+                    </p>
+                    <p className="mt-1 font-mono text-3xl text-foreground">
+                      {enterPct}%
+                    </p>
+                  </div>
+
+                  <div className="text-right">
+                    <p className="text-xs font-medium text-muted">Allocated</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {allocEth === null ? "—" : `${formatEth(allocEth)} ETH`}
+                    </p>
+                    <p className="mt-1 text-[11px] font-mono text-muted">
+                      {notionalUsd === null
+                        ? "≈ $— notional"
+                        : `≈ $${formatCompact(notionalUsd)} notional`}
+                    </p>
+                  </div>
+                </div>
+
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={enterPct}
+                  onChange={(e) => setEnterPct(Number(e.target.value))}
+                  className="w-full"
+                />
+
+                <div className="grid grid-cols-4 gap-2">
+                  {[5, 10, 25, 50].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setEnterPct(v)}
+                      className="rounded-full bg-background/60 px-3 py-1.5 text-xs font-medium text-foreground ring-1 ring-border/80 transition hover:bg-background/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                    >
+                      {v}%
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                    <p className="text-[11px] font-medium text-muted">Entry mid</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {spot === null ? "—" : formatPx(spot)}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                    <p className="text-[11px] font-medium text-muted">Qty</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {qty === null ? "—" : qty.toFixed(6)}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                    <p className="text-[11px] font-medium text-muted">Side</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {enterRec.side.toUpperCase()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {enterErr ? (
+                <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                  {enterErr}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <Button variant="ghost" onClick={() => setEnterRec(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={!canEnter}
+                  onClick={() =>
+                    void enterPosition({
+                      symbol: enterRec.symbol,
+                      side: enterRec.side,
+                      notional: notionalUsd ?? 0,
+                      meta: {
+                        source: "recommendation",
+                        subtitle: enterRec.subtitle,
+                        wallet: activeWallet,
+                        alloc_pct: enterPct,
+                        alloc_eth: allocEth,
+                        eth_usd: ethUsd,
+                      },
+                    })
+                  }
+                >
+                  {enteringSymbol ? "Entering..." : "Confirm enter"}
+                </Button>
+              </div>
+
+              <p className="text-xs text-muted">
+                Notional is approximated as{" "}
+                <span className="font-mono text-foreground">
+                  allocatedEth × ETH/USD
+                </span>
+                . This is a local tracker (not live trading yet).
+              </p>
+            </div>
+          );
+        })()}
+      </Modal>
 
       <Modal
         open={aboutOpen}

@@ -47,6 +47,8 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+const WALLET_LS_KEY = "bsm.selectedWallet";
+
 function formatTs(ts: number) {
   try {
     return new Date(ts).toLocaleString();
@@ -134,6 +136,12 @@ export function WalletClient() {
     setError(null);
     setWallets(data.wallets);
     setSelected((prev) => {
+      try {
+        const saved = window.localStorage.getItem(WALLET_LS_KEY);
+        if (saved && data.wallets.some((w) => w.address === saved)) return saved;
+      } catch {
+        // ignore
+      }
       if (prev && data.wallets.some((w) => w.address === prev)) return prev;
       return data.wallets[0]?.address ?? null;
     });
@@ -219,6 +227,11 @@ export function WalletClient() {
 
   useEffect(() => {
     if (!selected) return;
+    try {
+      window.localStorage.setItem(WALLET_LS_KEY, selected);
+    } catch {
+      // ignore
+    }
     void loadBalances([selected]);
     void loadTxs(selected);
 
@@ -593,4 +606,3 @@ export function WalletClient() {
     </main>
   );
 }
-
