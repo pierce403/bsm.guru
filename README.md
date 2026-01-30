@@ -15,6 +15,7 @@ Black-Scholes-Merton tooling for spotting relative value in crypto options.
   - `GET /api/hyperliquid/meta`
   - `POST /api/sync/hyperliquid` (sync Hyperliquid -> local DB)
   - `GET /api/markets/summary` (read from local DB)
+  - `GET /api/options/atm?symbol=BTC&spot=12345` (Deribit ATM option snapshot)
   - `GET/POST /api/wallets` + `GET /api/wallets/:address/keystore`
 - Quant libs:
   - `src/lib/quant/bsm.ts` (price/greeks/implied vol)

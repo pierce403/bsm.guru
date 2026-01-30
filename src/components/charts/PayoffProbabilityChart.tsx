@@ -1,16 +1,34 @@
 import { normPdf } from "@/lib/quant/normal";
+import type { OptionRight } from "@/lib/quant/bsm";
 
-type Side = "long" | "short";
+type Position = "long" | "short";
 
-export type PayoffProbabilityChartProps = {
+type BaseProps = {
   spot: number;
   prev?: number | null;
   sigma: number; // annualized
   horizonDays: number;
-  side: Side;
   width?: number;
   height?: number;
 };
+
+type SpotInstrument = {
+  kind?: "spot";
+  position: Position;
+  right?: never;
+  strike?: never;
+  premium?: never;
+};
+
+type OptionInstrument = {
+  kind: "option";
+  position: Position;
+  right: OptionRight;
+  strike: number;
+  premium: number;
+};
+
+export type PayoffProbabilityChartProps = BaseProps & (SpotInstrument | OptionInstrument);
 
 type Pt = {
   x: number;
@@ -68,7 +86,11 @@ export function PayoffProbabilityChart({
   prev,
   sigma,
   horizonDays,
-  side,
+  kind = "spot",
+  position,
+  right,
+  strike,
+  premium,
   width = 760,
   height = 260,
 }: PayoffProbabilityChartProps) {
@@ -96,7 +118,7 @@ export function PayoffProbabilityChart({
   // Choose mu so that E[ST] ~= target (for a lognormal with log-stddev s).
   const mu = Math.log(Math.max(target, 1e-12)) - 0.5 * s * s;
 
-  const k = side === "long" ? 1 : -1;
+  const k = position === "long" ? 1 : -1;
 
   // Use +-4σ in log space as a visually stable domain.
   const lnMin = Math.log(spot) - 4 * s;
@@ -109,7 +131,18 @@ export function PayoffProbabilityChart({
     const ln = lnMin + t * (lnMax - lnMin);
     const x = Math.exp(ln);
     const pdf = lognormalPdf(x, mu, s);
-    const payoff = k * (x - spot);
+    let payoff = k * (x - spot);
+    if (kind === "option") {
+      const K = typeof strike === "number" && Number.isFinite(strike) ? strike : NaN;
+      const prem = typeof premium === "number" && Number.isFinite(premium) ? premium : NaN;
+      const optRight = right;
+
+      if (Number.isFinite(K) && Number.isFinite(prem) && optRight) {
+        const intrinsic =
+          optRight === "call" ? Math.max(x - K, 0) : Math.max(K - x, 0);
+        payoff = position === "long" ? intrinsic - prem : prem - intrinsic;
+      }
+    }
     const dens = payoff * pdf;
     pts.push({ x, pdf, payoff, dens });
   }
@@ -151,6 +184,35 @@ export function PayoffProbabilityChart({
 
   const xSpot = xToSvg(spot);
   const xTarget = xToSvg(target);
+  const xStrike =
+    kind === "option" && typeof strike === "number" && Number.isFinite(strike)
+      ? xToSvg(strike)
+      : null;
+
+  const breakeven =
+    kind === "option" &&
+    typeof strike === "number" &&
+    Number.isFinite(strike) &&
+    typeof premium === "number" &&
+    Number.isFinite(premium) &&
+    right
+      ? Math.max(
+          right === "call" ? strike + premium : strike - premium,
+          1e-12,
+        )
+      : null;
+
+  const xBreakeven = breakeven !== null ? xToSvg(breakeven) : null;
+
+  const footer =
+    kind === "option" &&
+    right &&
+    typeof strike === "number" &&
+    Number.isFinite(strike) &&
+    typeof premium === "number" &&
+    Number.isFinite(premium)
+      ? `${horizonDays}d horizon • ${position.toUpperCase()} ${right.toUpperCase()} K ${strike.toFixed(2)} prem ${premium.toFixed(2)} • spot ${spot.toFixed(2)}${prev ? ` • prev ${prev.toFixed(2)}` : ""}`
+      : `${horizonDays}d horizon • ${position.toUpperCase()} spot • spot ${spot.toFixed(2)}${prev ? ` • prev ${prev.toFixed(2)}` : ""}`;
 
   return (
     <svg
@@ -235,6 +297,30 @@ export function PayoffProbabilityChart({
         />
       ) : null}
 
+      {/* Strike + breakeven (options only) */}
+      {xStrike !== null ? (
+        <line
+          x1={xStrike}
+          x2={xStrike}
+          y1={pad.t}
+          y2={baseY + densH}
+          stroke="color-mix(in oklab, var(--border) 80%, transparent)"
+          strokeWidth="1"
+          strokeDasharray="2 8"
+        />
+      ) : null}
+      {xBreakeven !== null ? (
+        <line
+          x1={xBreakeven}
+          x2={xBreakeven}
+          y1={pad.t}
+          y2={baseY + densH}
+          stroke="color-mix(in oklab, var(--accent) 78%, transparent)"
+          strokeWidth="1"
+          strokeDasharray="6 8"
+        />
+      ) : null}
+
       {/* Labels */}
       <text
         x={pad.l}
@@ -242,7 +328,7 @@ export function PayoffProbabilityChart({
         fontSize="11"
         fill="color-mix(in oklab, var(--muted) 85%, transparent)"
       >
-        {`${horizonDays}d horizon • ${side.toUpperCase()} • spot ${spot.toFixed(2)}${prev ? ` • prev ${prev.toFixed(2)}` : ""}`}
+        {footer}
       </text>
     </svg>
   );
