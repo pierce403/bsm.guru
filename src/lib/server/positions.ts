@@ -199,6 +199,9 @@ export function openPosition(opts: {
   symbol: string;
   side: PositionSide;
   notional: number;
+  qty?: number;
+  entryPx?: number;
+  entryTs?: number;
   meta?: Record<string, unknown>;
 }) {
   const symbol = opts.symbol.toUpperCase();
@@ -215,13 +218,25 @@ export function openPosition(opts: {
     .get(symbol) as { id: number } | undefined;
   if (existing) throw new Error(`Position already open for ${symbol}`);
 
-  const mid = getLatestMid(symbol);
-  if (!mid || !Number.isFinite(mid.mid) || mid.mid <= 0) {
-    throw new Error(`No mid price for ${symbol}. Sync DB first.`);
+  const explicitEntryPx = toNumber(opts.entryPx);
+  const explicitQty = toNumber(opts.qty);
+  const explicitEntryTs = toNumber(opts.entryTs);
+
+  const mid = explicitEntryPx ? null : getLatestMid(symbol);
+  if (!explicitEntryPx) {
+    if (!mid || !Number.isFinite(mid.mid) || mid.mid <= 0) {
+      throw new Error(`No mid price for ${symbol}. Sync DB first.`);
+    }
   }
 
-  const qty = notional / mid.mid;
+  const entryPx = explicitEntryPx ?? (mid ? mid.mid : null);
+  if (entryPx === null || entryPx <= 0) throw new Error("Invalid entry price");
+
+  const qty = explicitQty ?? notional / entryPx;
+  if (!Number.isFinite(qty) || qty <= 0) throw new Error("Invalid qty");
+
   const now = Date.now();
+  const entryTs = explicitEntryTs ?? now;
   const metaJson = opts.meta ? JSON.stringify(opts.meta) : null;
 
   const ins = db.prepare(`
@@ -232,7 +247,7 @@ export function openPosition(opts: {
     VALUES(?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL, ?, ?)
   `);
 
-  const res = ins.run(symbol, opts.side, notional, qty, mid.mid, now, metaJson, now);
+  const res = ins.run(symbol, opts.side, notional, qty, entryPx, entryTs, metaJson, now);
   const id = Number(res.lastInsertRowid);
 
   const row = db
@@ -244,6 +259,48 @@ export function openPosition(opts: {
 
   if (!row) throw new Error("Failed to create position");
   return row;
+}
+
+export function getPositionById(id: number) {
+  const db = getDb();
+  const pos = db
+    .prepare(
+      `SELECT id, symbol, side, notional, qty, entry_px, entry_ts, status, exit_px, exit_ts, closed_pnl, meta_json, updated_at
+       FROM positions WHERE id=?`,
+    )
+    .get(id) as PositionRow | undefined;
+  return pos ?? null;
+}
+
+export function closePositionWithExit(opts: { id: number; exitPx: number; exitTs?: number }) {
+  const db = getDb();
+  const pos = getPositionById(opts.id);
+  if (!pos) throw new Error("Position not found");
+  if (pos.status !== "open") throw new Error("Position is not open");
+
+  const exitPx = toNumber(opts.exitPx);
+  if (exitPx === null || exitPx <= 0) throw new Error("Invalid exit price");
+
+  const { pnl } = markToMarket({
+    side: pos.side,
+    notional: pos.notional,
+    qty: pos.qty,
+    entryPx: pos.entry_px,
+    currentPx: exitPx,
+  });
+
+  const now = Date.now();
+  const exitTs = toNumber(opts.exitTs) ?? now;
+
+  db.prepare(
+    `UPDATE positions
+     SET status='closed', exit_px=?, exit_ts=?, closed_pnl=?, updated_at=?
+     WHERE id=? AND status='open'`,
+  ).run(exitPx, exitTs, pnl, now, opts.id);
+
+  const updated = getPositionById(opts.id);
+  if (!updated) throw new Error("Failed to close position");
+  return updated;
 }
 
 export function closePosition(id: number) {

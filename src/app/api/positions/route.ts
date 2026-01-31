@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { logTradeEvent } from "@/lib/server/logs";
 import { listOpenPositions, openPosition, type PositionSide } from "@/lib/server/positions";
+import { placePerpIocOrder } from "@/lib/server/hyperliquid-trading";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,6 +40,7 @@ export async function POST(req: Request) {
       symbol?: unknown;
       side?: unknown;
       notional?: unknown;
+      wallet?: unknown;
       meta?: unknown;
     };
 
@@ -47,16 +49,37 @@ export async function POST(req: Request) {
     const notionalRaw =
       typeof body.notional === "number" ? body.notional : Number(body.notional);
     const notional = Number.isFinite(notionalRaw) ? notionalRaw : 1000;
+    const wallet = typeof body.wallet === "string" ? body.wallet : "";
 
     if (!side) throw new Error("side must be 'long' or 'short'");
+    if (!wallet) throw new Error("wallet is required");
+
+    const trade = await placePerpIocOrder({
+      walletAddress: wallet,
+      symbol,
+      side,
+      notionalUsd: notional,
+    });
+
     const pos = openPosition({
       symbol,
       side: side as PositionSide,
-      notional,
-      meta:
-        body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
+      notional: trade.fill.totalSz * trade.fill.avgPx,
+      qty: trade.fill.totalSz,
+      entryPx: trade.fill.avgPx,
+      entryTs: Date.now(),
+      meta: {
+        ...(body.meta && typeof body.meta === "object" && !Array.isArray(body.meta)
           ? (body.meta as Record<string, unknown>)
-          : undefined,
+          : {}),
+        wallet: wallet.toLowerCase(),
+        hl: {
+          oid: trade.fill.oid,
+          avgPx: trade.fill.avgPx,
+          totalSz: trade.fill.totalSz,
+          proof: trade.proof,
+        },
+      },
     });
 
     await logTradeEvent(req, {
@@ -68,9 +91,18 @@ export async function POST(req: Request) {
       notional: pos.notional,
       qty: pos.qty,
       entry_px: pos.entry_px,
+      hl_oid: trade.fill.oid,
+      proof: trade.proof,
     });
 
-    return NextResponse.json({ ts: Date.now(), position: pos });
+    return NextResponse.json({
+      ts: Date.now(),
+      position: pos,
+      trade: {
+        fill: trade.fill,
+        proof: trade.proof,
+      },
+    });
   } catch (e) {
     await logTradeEvent(req, {
       action: "positions.open",

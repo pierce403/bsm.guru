@@ -88,12 +88,40 @@ type OpenPosition = {
   pnl: number | null;
   pnl_pct: number | null;
   value: number | null;
+  meta_json: string | null;
   health_score: number | null;
   health_label: string | null;
   health_action: "hold" | "review" | "exit" | "exit_now" | null;
 };
 
 type PositionsResponse = { ts: number; positions: OpenPosition[] };
+
+type TradeProof = {
+  hypurrscanAddressUrl: string;
+  dexlyAddressUrl: string;
+};
+
+type EnterResponse =
+  | {
+      ts: number;
+      position: OpenPosition;
+      trade: {
+        fill: { oid: number | null; avgPx: number; totalSz: number };
+        proof: TradeProof;
+      };
+    }
+  | { error: string };
+
+type CloseResponse =
+  | {
+      ts: number;
+      position: OpenPosition;
+      trade: {
+        fill: { oid: number | null; avgPx: number; totalSz: number };
+        proof: TradeProof;
+      };
+    }
+  | { error: string };
 
 type Recommendation = {
   symbol: string;
@@ -167,6 +195,7 @@ export function MarketsDashboard() {
   const [enterRec, setEnterRec] = useState<Recommendation | null>(null);
   const [enterPct, setEnterPct] = useState(10);
   const [enterErr, setEnterErr] = useState<string | null>(null);
+  const [lastTradeProof, setLastTradeProof] = useState<TradeProof | null>(null);
 
   async function refresh() {
     try {
@@ -260,22 +289,26 @@ export function MarketsDashboard() {
     symbol: string;
     side: PositionSide;
     notional: number;
+    wallet: string;
     meta?: Record<string, unknown>;
   }) {
     setEnteringSymbol(opts.symbol);
     setEnterErr(null);
     setPositionsErr(null);
     try {
-      await fetchJson("/api/positions", {
+      const res = await fetchJson<EnterResponse>("/api/positions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           symbol: opts.symbol,
           side: opts.side,
           notional: opts.notional,
+          wallet: opts.wallet,
           meta: opts.meta,
         }),
       });
+      if ("error" in res) throw new Error(res.error);
+      setLastTradeProof(res.trade.proof);
       setEnterRec(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to enter position";
@@ -291,11 +324,13 @@ export function MarketsDashboard() {
     setExitingId(id);
     setPositionsErr(null);
     try {
-      await fetchJson(`/api/positions/${id}/close`, {
+      const res = await fetchJson<CloseResponse>(`/api/positions/${id}/close`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}",
       });
+      if ("error" in res) throw new Error(res.error);
+      setLastTradeProof(res.trade.proof);
     } catch (e) {
       setPositionsErr(e instanceof Error ? e.message : "Failed to exit position");
     } finally {
@@ -535,6 +570,7 @@ export function MarketsDashboard() {
                   <th className="px-6 py-3 font-medium">Entry</th>
                   <th className="px-6 py-3 font-medium">Current</th>
                   <th className="px-6 py-3 font-medium">Value</th>
+                  <th className="px-6 py-3 font-medium">Proof</th>
                   <th className="px-6 py-3 font-medium">Health</th>
                   <th className="px-6 py-3 font-medium">Exit</th>
                 </tr>
@@ -558,6 +594,21 @@ export function MarketsDashboard() {
                         : p.health_action === "hold"
                           ? "text-success"
                           : "text-muted";
+
+                  const proofUrl = (() => {
+                    try {
+                      const meta = p.meta_json
+                        ? (JSON.parse(p.meta_json) as Record<string, unknown>)
+                        : null;
+                      const hl = meta && typeof meta.hl === "object" ? (meta.hl as Record<string, unknown>) : null;
+                      const proof =
+                        hl && typeof hl.proof === "object" ? (hl.proof as Record<string, unknown>) : null;
+                      const url = proof ? proof.hypurrscanAddressUrl : null;
+                      return typeof url === "string" ? url : null;
+                    } catch {
+                      return null;
+                    }
+                  })();
 
                   return (
                     <tr key={p.id} className="hover:bg-background/40">
@@ -592,6 +643,21 @@ export function MarketsDashboard() {
                             ? "pnl —"
                             : `pnl ${formatCompact(p.pnl)} (${p.pnl_pct === null ? "—" : formatPercent(p.pnl_pct)})`}
                         </p>
+                      </td>
+
+                      <td className="border-t border-border/60 px-6 py-3">
+                        {proofUrl ? (
+                          <a
+                            href={proofUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-sm font-medium text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                          >
+                            Hypurrscan
+                          </a>
+                        ) : (
+                          <span className="text-sm text-muted">—</span>
+                        )}
                       </td>
 
                       <td className="border-t border-border/60 px-6 py-3">
@@ -687,6 +753,30 @@ export function MarketsDashboard() {
             Research only (not financial advice).
           </p>
         </div>
+
+        {lastTradeProof ? (
+          <Card className="flex flex-wrap items-center justify-between gap-3 bg-background/60">
+            <p className="text-sm text-muted">Latest trade proof:</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <a
+                href={lastTradeProof.hypurrscanAddressUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-medium text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+              >
+                Hypurrscan
+              </a>
+              <a
+                href={lastTradeProof.dexlyAddressUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-medium text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+              >
+                Dexly
+              </a>
+            </div>
+          </Card>
+        ) : null}
 
         <div className="grid gap-4 md:grid-cols-3">
           {recommendations.map((rec) => (
@@ -1054,36 +1144,37 @@ export function MarketsDashboard() {
                 </div>
               ) : null}
 
-                <div className="flex flex-wrap items-center justify-end gap-3">
-                  <Button variant="ghost" onClick={() => setEnterRec(null)}>
-                    Cancel
-                  </Button>
-                  <Button
-                    disabled={!canEnter}
-                    onClick={() =>
-                      void enterPosition({
-                        symbol: enterRec.symbol,
-                        side: enterRec.side,
-                        notional: allocUsd ?? 0,
-                        meta: {
-                          source: "recommendation",
-                          subtitle: enterRec.subtitle,
-                          wallet: activeWallet,
-                          alloc_pct: enterPct,
-                          free_usdc: freeUsdc,
-                          alloc_usdc: allocUsd,
-                          hl_withdrawable_usdc: hlFreeUsdc,
-                        },
-                      })
-                    }
-                  >
-                    {enteringSymbol ? "Entering..." : "Confirm enter"}
-                  </Button>
-                </div>
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <Button variant="ghost" onClick={() => setEnterRec(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={!canEnter}
+                  onClick={() =>
+                    void enterPosition({
+                      symbol: enterRec.symbol,
+                      side: enterRec.side,
+                      notional: allocUsd ?? 0,
+                      wallet: activeWallet ?? "",
+                      meta: {
+                        source: "recommendation",
+                        subtitle: enterRec.subtitle,
+                        wallet: activeWallet,
+                        alloc_pct: enterPct,
+                        free_usdc: freeUsdc,
+                        alloc_usdc: allocUsd,
+                        hl_withdrawable_usdc: hlFreeUsdc,
+                      },
+                    })
+                  }
+                >
+                  {enteringSymbol ? "Entering..." : "Confirm enter"}
+                </Button>
+              </div>
 
               <p className="text-xs text-muted">
-                This sizes positions using Hyperliquid perps withdrawable (USDC).
-                This is still a local tracker (not live trading yet).
+                This sends a real IOC order to Hyperliquid and records the fill
+                locally for tracking.
               </p>
             </div>
           );

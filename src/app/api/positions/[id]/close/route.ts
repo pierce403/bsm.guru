@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { logTradeEvent } from "@/lib/server/logs";
-import { closePosition } from "@/lib/server/positions";
+import { closePositionWithExit, getPositionById } from "@/lib/server/positions";
+import { closePerpIocOrder } from "@/lib/server/hyperliquid-trading";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,38 @@ export async function POST(
       return NextResponse.json({ error: "Invalid id" }, { status: 400 });
     }
 
-    const pos = closePosition(id);
+    const existing = getPositionById(id);
+    if (!existing) return NextResponse.json({ error: "Position not found" }, { status: 404 });
+    if (existing.status !== "open") return NextResponse.json({ error: "Position is not open" }, { status: 400 });
+
+    const meta = (() => {
+      try {
+        return existing.meta_json ? (JSON.parse(existing.meta_json) as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    })();
+    const wallet = typeof meta.wallet === "string" ? meta.wallet : "";
+    if (!wallet) {
+      return NextResponse.json(
+        { error: "Position is missing wallet metadata; cannot close on Hyperliquid" },
+        { status: 400 },
+      );
+    }
+
+    const closeSide = existing.side === "long" ? "sell" : "buy";
+    const trade = await closePerpIocOrder({
+      walletAddress: wallet,
+      symbol: existing.symbol,
+      qty: existing.qty,
+      closeSide,
+    });
+
+    const pos = closePositionWithExit({
+      id,
+      exitPx: trade.fill.avgPx,
+      exitTs: Date.now(),
+    });
 
     await logTradeEvent(req, {
       action: "positions.close",
@@ -41,9 +73,15 @@ export async function POST(
       side: pos.side,
       exit_px: pos.exit_px,
       closed_pnl: pos.closed_pnl,
+      hl_oid: trade.fill.oid,
+      proof: trade.proof,
     });
 
-    return NextResponse.json({ ts: Date.now(), position: pos });
+    return NextResponse.json({
+      ts: Date.now(),
+      position: pos,
+      trade: { fill: trade.fill, proof: trade.proof },
+    });
   } catch (e) {
     await logTradeEvent(req, {
       action: "positions.close",
@@ -57,4 +95,3 @@ export async function POST(
     );
   }
 }
-
