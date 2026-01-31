@@ -37,6 +37,8 @@ type DepositFromEthResponse =
         from: string;
         ethInWei: string;
         usdcOutUnits: string;
+        wrapTxHash: string;
+        approveTxHash: string;
         swapTxHash: string;
         depositTxHash: string;
       };
@@ -691,6 +693,28 @@ export function WalletClient() {
                         .
                       </p>
                       <p className="mt-2 text-xs">
+                        Wrap tx:{" "}
+                        <a
+                          className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                          href={`https://arbiscan.io/tx/${depositRes.result.wrapTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {depositRes.result.wrapTxHash.slice(0, 12)}…
+                        </a>
+                      </p>
+                      <p className="mt-1 text-xs">
+                        Approve tx:{" "}
+                        <a
+                          className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                          href={`https://arbiscan.io/tx/${depositRes.result.approveTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {depositRes.result.approveTxHash.slice(0, 12)}…
+                        </a>
+                      </p>
+                      <p className="mt-1 text-xs">
                         Swap tx:{" "}
                         <a
                           className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"

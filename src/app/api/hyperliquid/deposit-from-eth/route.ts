@@ -60,6 +60,8 @@ export async function POST(req: Request) {
       from: res.from,
       ethInWei: res.ethInWei,
       usdcOutUnits: res.usdcOutUnits,
+      wrapTxHash: res.wrapTxHash,
+      approveTxHash: res.approveTxHash,
       swapTxHash: res.swapTxHash,
       depositTxHash: res.depositTxHash,
     });
@@ -78,4 +80,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

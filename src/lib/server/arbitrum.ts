@@ -72,6 +72,8 @@ export type EthToHyperliquidDepositResult = {
   from: string;
   ethInWei: string;
   usdcOutUnits: string;
+  wrapTxHash: string;
+  approveTxHash: string;
   swapTxHash: string;
   depositTxHash: string;
 };
@@ -90,6 +92,11 @@ const quoterIface = new Interface([
 
 const routerIface = new Interface([
   "function exactInputSingle(tuple(address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)",
+]);
+
+const wethIface = new Interface([
+  "function deposit() payable",
+  "function approve(address spender,uint256 value) returns (bool)",
 ]);
 
 const usdcIface = new Interface([
@@ -176,6 +183,24 @@ export async function swapEthToUsdcAndDepositToHyperliquid(opts: {
     bigint,
   ])[0];
 
+  // SwapRouter expects ERC20 for tokenIn. Wrap ETH -> WETH, then approve router.
+  const wrapTx = await signer.sendTransaction({
+    to: WETH_ARB,
+    data: wethIface.encodeFunctionData("deposit", []),
+    value: ethInWei,
+  });
+  await wrapTx.wait();
+
+  const approveTx = await signer.sendTransaction({
+    to: WETH_ARB,
+    data: wethIface.encodeFunctionData("approve", [
+      UNISWAP_V3_SWAP_ROUTER_02,
+      ethInWei,
+    ]),
+    value: BigInt(0),
+  });
+  await approveTx.wait();
+
   const swapData = routerIface.encodeFunctionData("exactInputSingle", [
     {
       tokenIn: WETH_ARB,
@@ -192,7 +217,7 @@ export async function swapEthToUsdcAndDepositToHyperliquid(opts: {
   const swapTx = await signer.sendTransaction({
     to: UNISWAP_V3_SWAP_ROUTER_02,
     data: swapData,
-    value: ethInWei,
+    value: BigInt(0),
   });
   await swapTx.wait();
 
@@ -228,6 +253,8 @@ export async function swapEthToUsdcAndDepositToHyperliquid(opts: {
     from,
     ethInWei: ethInWei.toString(),
     usdcOutUnits: usdcOut.toString(),
+    wrapTxHash: wrapTx.hash,
+    approveTxHash: approveTx.hash,
     swapTxHash: swapTx.hash,
     depositTxHash: depositTx.hash,
   };
