@@ -51,6 +51,24 @@ type HyperliquidStateResponse =
     }
   | { error: string };
 
+type HyperliquidOpenOrdersResponse =
+  | {
+      ts: number;
+      user: string;
+      orders: Array<{
+        coin: string;
+        oid: number;
+        side?: string;
+        limitPx?: string;
+        sz?: string;
+        timestamp?: number;
+        reduceOnly?: boolean;
+      }>;
+    }
+  | { error: string };
+
+type CancelOrdersResponse = { ts: number; wallet: string; result: unknown } | { error: string };
+
 type DepositFromEthResponse =
   | {
       ts: number;
@@ -140,6 +158,12 @@ export function WalletClient() {
   const [arbLoading, setArbLoading] = useState(false);
   const [hlState, setHlState] = useState<HyperliquidStateResponse | null>(null);
   const [hlLoading, setHlLoading] = useState(false);
+  const [hlOrders, setHlOrders] = useState<HyperliquidOpenOrdersResponse | null>(null);
+  const [hlOrdersLoading, setHlOrdersLoading] = useState(false);
+  const [hlOrdersErr, setHlOrdersErr] = useState<string | null>(null);
+  const [hlCanceling, setHlCanceling] = useState(false);
+  const [hlCancelErr, setHlCancelErr] = useState<string | null>(null);
+  const [hlCancelRes, setHlCancelRes] = useState<CancelOrdersResponse | null>(null);
 
   const [walletPassword, setWalletPassword] = useState("");
   const [ethToConvert, setEthToConvert] = useState("0.05");
@@ -320,6 +344,30 @@ export function WalletClient() {
     }
   }, [selectedWallet]);
 
+  const refreshHlOrders = useCallback(async () => {
+    const addr = selectedWallet?.address;
+    if (!addr) {
+      setHlOrders(null);
+      setHlOrdersErr(null);
+      return;
+    }
+    setHlOrdersLoading(true);
+    setHlOrdersErr(null);
+    try {
+      const data = await fetchJson<HyperliquidOpenOrdersResponse>(
+        `/api/hyperliquid/open-orders/${addr}`,
+        { cache: "no-store" },
+      );
+      setHlOrders(data);
+      if ("error" in data) setHlOrdersErr(data.error);
+    } catch (e) {
+      setHlOrdersErr(e instanceof Error ? e.message : "Failed to fetch open orders");
+      setHlOrders(null);
+    } finally {
+      setHlOrdersLoading(false);
+    }
+  }, [selectedWallet]);
+
   useEffect(() => {
     void refreshArbBalances();
     const id = window.setInterval(() => void refreshArbBalances(), 15_000);
@@ -331,6 +379,42 @@ export function WalletClient() {
     const id = window.setInterval(() => void refreshHlState(), 15_000);
     return () => window.clearInterval(id);
   }, [refreshHlState]);
+
+  useEffect(() => {
+    void refreshHlOrders();
+    const id = window.setInterval(() => void refreshHlOrders(), 15_000);
+    return () => window.clearInterval(id);
+  }, [refreshHlOrders]);
+
+  const cancelHlOrders = useCallback(
+    async (opts: { coin?: string; orders?: Array<{ coin: string; oid: number }> }) => {
+      const addr = selectedWallet?.address;
+      if (!addr) return;
+      setHlCanceling(true);
+      setHlCancelErr(null);
+      setHlCancelRes(null);
+      try {
+        const data = await fetchJson<CancelOrdersResponse>("/api/hyperliquid/cancel-orders", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            wallet: addr,
+            password: walletPassword.trim() || undefined,
+            coin: opts.coin,
+            orders: opts.orders,
+          }),
+        });
+        setHlCancelRes(data);
+        if ("error" in data) setHlCancelErr(data.error);
+      } catch (e) {
+        setHlCancelErr(e instanceof Error ? e.message : "Cancel failed");
+      } finally {
+        setHlCanceling(false);
+        await refreshHlOrders();
+      }
+    },
+    [refreshHlOrders, selectedWallet, walletPassword],
+  );
 
   const depositFromEth = useCallback(
     async (ethAmount: string) => {
@@ -829,9 +913,22 @@ export function WalletClient() {
                     {hlLoading ? "Refreshing…" : "auto-refreshing"}
                   </p>
                 </div>
-                <Button variant="ghost" disabled={!selectedWallet} onClick={() => void refreshHlState()}>
-                  Refresh
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet}
+                    onClick={() => void refreshHlState()}
+                  >
+                    Refresh
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet}
+                    onClick={() => void refreshHlOrders()}
+                  >
+                    Orders
+                  </Button>
+                </div>
               </div>
 
               {"error" in (hlState ?? {}) ? (
@@ -869,6 +966,112 @@ export function WalletClient() {
                 Deposits from Arbitrum USDC typically credit your Hyperliquid perps account. If you
                 deposited and don’t see “Spot USDC”, you may need to transfer from perps ↔ spot inside
                 Hyperliquid.
+              </p>
+            </div>
+
+            <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted">Open limit orders</p>
+                  <p className="text-sm text-muted">{hlOrdersLoading ? "Refreshing…" : "auto-refreshing"}</p>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet || hlCanceling}
+                    onClick={() => void cancelHlOrders({})}
+                  >
+                    {hlCanceling ? "Canceling…" : "Cancel all"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet || hlOrdersLoading}
+                    onClick={() => void refreshHlOrders()}
+                  >
+                    Refresh
+                  </Button>
+                </div>
+              </div>
+
+              {hlOrdersErr ? (
+                <div className="mt-3 rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                  {hlOrdersErr}
+                </div>
+              ) : null}
+
+              {hlCancelErr ? (
+                <div className="mt-3 rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                  {hlCancelErr}
+                </div>
+              ) : null}
+
+              {hlCancelRes && !("error" in hlCancelRes) ? (
+                <div className="mt-3 rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+                  Submitted cancel request.
+                </div>
+              ) : null}
+
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full border-separate border-spacing-0 text-sm">
+                  <thead className="text-left text-xs text-muted">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Coin</th>
+                      <th className="px-3 py-2 font-medium">Side</th>
+                      <th className="px-3 py-2 font-medium">Limit</th>
+                      <th className="px-3 py-2 font-medium">Size</th>
+                      <th className="px-3 py-2 font-medium">OID</th>
+                      <th className="px-3 py-2 font-medium">Cancel</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-sm">
+                    {hlOrders && !("error" in hlOrders) && hlOrders.orders.length ? (
+                      hlOrders.orders.map((o) => (
+                        <tr key={`${o.coin}:${o.oid}`}>
+                          <td className="border-t border-border/60 px-3 py-2 font-mono text-foreground">
+                            {o.coin}
+                          </td>
+                          <td className="border-t border-border/60 px-3 py-2 text-muted">
+                            {o.side ?? "—"}
+                          </td>
+                          <td className="border-t border-border/60 px-3 py-2 font-mono text-muted">
+                            {o.limitPx ?? "—"}
+                          </td>
+                          <td className="border-t border-border/60 px-3 py-2 font-mono text-muted">
+                            {o.sz ?? "—"}
+                          </td>
+                          <td className="border-t border-border/60 px-3 py-2 font-mono text-muted">
+                            {o.oid}
+                          </td>
+                          <td className="border-t border-border/60 px-3 py-2">
+                            <Button
+                              variant="ghost"
+                              disabled={hlCanceling}
+                              onClick={() =>
+                                void cancelHlOrders({ orders: [{ coin: o.coin, oid: o.oid }] })
+                              }
+                            >
+                              Cancel
+                            </Button>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="border-t border-border/60 px-3 py-4 text-sm text-muted"
+                        >
+                          {hlOrdersLoading ? "Loading…" : "No open orders."}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="mt-3 text-xs text-muted">
+                If you see many open orders here, use “Cancel all” to clean up. (This app only
+                intends to use IOC orders; anything resting is unexpected.)
               </p>
             </div>
 
