@@ -7,8 +7,6 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { Select } from "@/components/ui/Select";
-import { bsmPrice, impliedVol, type OptionRight } from "@/lib/quant/bsm";
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
 const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeUsdcOverride.";
@@ -30,28 +28,6 @@ type SummaryResponse = {
   lastSync: { ts: number } | null;
   rows: SummaryRow[];
 };
-
-type OptionQuoteUsd = {
-  instrumentName: string;
-  underlyingUsd: number;
-  bidUsd: number | null;
-  askUsd: number | null;
-  midUsd: number | null;
-  markUsd: number | null;
-  ivMark: number | null;
-};
-
-type AtmOptionSnapshot = {
-  venue: "deribit";
-  symbol: string;
-  spotUsd: number;
-  expiryTs: number;
-  strike: number;
-  call: OptionQuoteUsd | null;
-  put: OptionQuoteUsd | null;
-};
-
-type AtmOptionResponse = { ts: number; snap: AtmOptionSnapshot | null };
 
 type PositionSide = "long" | "short";
 
@@ -203,10 +179,6 @@ export function MarketsDashboard() {
   const [exitingId, setExitingId] = useState<number | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
-  const [optRight, setOptRight] = useState<OptionRight>("call");
-  const [optSnap, setOptSnap] = useState<AtmOptionSnapshot | null>(null);
-  const [optLoading, setOptLoading] = useState(false);
-  const [optErr, setOptErr] = useState<string | null>(null);
   const [activeWallet, setActiveWallet] = useState<string | null>(null);
   const [hlFreeUsdc, setHlFreeUsdc] = useState<number | null>(null);
   const [walletFreeUsdcOverride, setWalletFreeUsdcOverride] =
@@ -510,45 +482,6 @@ export function MarketsDashboard() {
     () => (chartSymbol ? rows.find((r) => r.symbol === chartSymbol) ?? null : null),
     [chartSymbol, rows],
   );
-
-  const chartRowSymbol = chartRow?.symbol ?? null;
-  const chartRowMid = chartRow?.mid ?? null;
-  const chartRowVol = chartRow?.realized_vol ?? null;
-
-  useEffect(() => {
-    let cancelled = false;
-    setOptRight("call");
-    setOptSnap(null);
-    setOptErr(null);
-
-    if (!chartRowSymbol || chartRowMid === null || chartRowVol === null) return;
-
-    const supported = new Set(["BTC", "ETH", "SOL"]);
-    if (!supported.has(chartRowSymbol)) return;
-
-    setOptLoading(true);
-    fetchJson<AtmOptionResponse>(
-      `/api/options/atm?symbol=${encodeURIComponent(chartRowSymbol)}&spot=${encodeURIComponent(chartRowMid)}&targetDays=7`,
-      { cache: "no-store" },
-    )
-      .then((data) => {
-        if (cancelled) return;
-        setOptSnap(data.snap);
-        setOptErr(null);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setOptErr(e instanceof Error ? e.message : "Failed to load options");
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setOptLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [chartRowSymbol, chartRowMid, chartRowVol]);
 
   const hasOpenBySymbol = useMemo(() => {
     const set = new Set<string>();
@@ -972,7 +905,7 @@ export function MarketsDashboard() {
                         disabled={r.realized_vol === null || !Number.isFinite(r.mid)}
                         onClick={() => setChartSymbol(r.symbol)}
                       >
-                        View
+                        Chart
                       </button>
                     </td>
                   </tr>
@@ -1277,14 +1210,6 @@ export function MarketsDashboard() {
                 a 5% day might be boring if realized σ is huge, but a 2% day can
                 be a shock if realized σ is tiny.
               </p>
-              <p>
-                <span className="font-medium text-foreground">
-                  Options (when wired in):
-                </span>{" "}
-                compare realized σ vs implied vol and use tail p / sigma-moves
-                to sanity-check whether the option surface is “pricing the
-                chaos” appropriately.
-              </p>
             </div>
           </div>
 
@@ -1298,7 +1223,7 @@ export function MarketsDashboard() {
       <Modal
         open={!!chartSymbol}
         onClose={() => setChartSymbol(null)}
-        title={chartRow ? `${chartRow.symbol}: probability-weighted payoff` : "Chart"}
+        title={chartRow ? `${chartRow.symbol}: model payoff chart` : "Chart"}
       >
         {!chartRow ? (
           <p className="text-sm text-muted">No data.</p>
@@ -1307,158 +1232,28 @@ export function MarketsDashboard() {
         ) : (
           <div className="space-y-4">
             <p className="text-sm text-muted">
-              This is a{" "}
-              <span className="font-medium text-foreground">
-                probability-weighted payoff
-              </span>{" "}
-              chart (pdf of price outcomes + expected-value density). If we can
-              fetch an options quote for this asset, we render the{" "}
-              <span className="font-medium text-foreground">actual option P/L</span>{" "}
-              (premium/strike/expiry); otherwise we fall back to a simple
-              long/short spot payoff. Same visual style as those Veritasium
-              “is it overpriced?” charts.
+              This chart is <span className="font-medium text-foreground">not random</span>.
+              It uses the current Hyperliquid mid and realized σ computed from recent
+              Hyperliquid candles, then assumes a lognormal distribution for the end
+              price over the horizon.
+              <span className="font-medium text-foreground"> Solid</span> = price density.
+              <span className="font-medium text-foreground"> Dashed</span> = linear P/L for a
+              1-unit long/short position. Shading shows P/L weighted by probability
+              (green contributes positive model EV, red negative).
             </p>
 
             <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
-              {optLoading ? (
-                <p className="text-sm text-muted">Loading option chain…</p>
-              ) : optErr ? (
-                <p className="text-sm text-danger">{optErr}</p>
-              ) : optSnap ? (
-                (() => {
-                  const quote = optRight === "call" ? optSnap.call : optSnap.put;
-                  const market =
-                    quote?.midUsd ?? quote?.markUsd ?? null;
-                  const days =
-                    (optSnap.expiryTs - Date.now()) / (24 * 60 * 60 * 1000);
-                  const horizonDays = Math.max(days, 1 / 1440); // 1 minute floor
-                  const T = Math.max(horizonDays, 0) / 365;
-                  const sigma = chartRow.realized_vol!;
-                  const fair = bsmPrice(
-                    { S: chartRow.mid, K: optSnap.strike, T, sigma, r: 0, q: 0 },
-                    optRight,
-                  );
-                  const edge = market === null ? null : market - fair;
-                  const position =
-                    edge !== null && edge < 0 ? "long" : "short";
-
-                  return market === null ? (
-                    <p className="text-sm text-muted">
-                      No quote available for this ATM option.
-                    </p>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="grid gap-3 sm:grid-cols-3">
-                        <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
-                          <p className="text-[11px] font-medium text-muted">
-                            Venue / expiry
-                          </p>
-                          <p className="mt-1 font-mono text-sm text-foreground">
-                            Deribit • {new Date(optSnap.expiryTs).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
-                          <p className="text-[11px] font-medium text-muted">
-                            Strike (K)
-                          </p>
-                          <p className="mt-1 font-mono text-sm text-foreground">
-                            {formatPx(optSnap.strike)}
-                          </p>
-                        </div>
-                        <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
-                          <p className="text-[11px] font-medium text-muted">
-                            Market / fair
-                          </p>
-                          <p className="mt-1 font-mono text-sm text-foreground">
-                            {formatPx(market)} / {formatPx(fair)}
-                          </p>
-                          <p
-                            className={[
-                              "mt-1 text-[11px] font-mono",
-                              edge === null
-                                ? "text-muted"
-                                : edge < 0
-                                  ? "text-success"
-                                  : "text-danger",
-                            ].join(" ")}
-                          >
-                            edge {edge === null ? "—" : formatPx(edge)}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-medium text-muted">
-                            Right
-                          </label>
-                          <Select
-                            value={optRight}
-                            onChange={(e) =>
-                              setOptRight(e.target.value as OptionRight)
-                            }
-                          >
-                            <option value="call">Call</option>
-                            <option value="put">Put</option>
-                          </Select>
-                        </div>
-                        <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
-                          <p className="text-[11px] font-medium text-muted">
-                            Implied σ (from market)
-                          </p>
-                          <p className="mt-1 font-mono text-sm text-foreground">
-                            {(() => {
-                              const iv = impliedVol({
-                                S: chartRow.mid,
-                                K: optSnap.strike,
-                                T,
-                                r: 0,
-                                q: 0,
-                                right: optRight,
-                                price: market,
-                              });
-                              return iv === null ? "—" : `${(iv * 100).toFixed(1)}%`;
-                            })()}
-                          </p>
-                          <p className="mt-1 text-[11px] text-muted">
-                            Deribit mark IV:{" "}
-                            {quote?.ivMark === null || quote?.ivMark === undefined
-                              ? "—"
-                              : `${(quote.ivMark * 100).toFixed(1)}%`}
-                          </p>
-                        </div>
-                      </div>
-
-                      <PayoffProbabilityChart
-                        kind="option"
-                        spot={chartRow.mid}
-                        prev={chartRow.prev_day_px}
-                        sigma={chartRow.realized_vol}
-                        horizonDays={horizonDays}
-                        position={position}
-                        right={optRight}
-                        strike={optSnap.strike}
-                        premium={market}
-                      />
-                    </div>
-                  );
-                })()
-              ) : (
-                <PayoffProbabilityChart
-                  spot={chartRow.mid}
-                  prev={chartRow.prev_day_px}
-                  sigma={chartRow.realized_vol}
-                  horizonDays={1}
-                  position={(chartRow.sigma_move_24h ?? 0) >= 0 ? "short" : "long"}
-                />
-              )}
+              <PayoffProbabilityChart
+                spot={chartRow.mid}
+                sigma={chartRow.realized_vol}
+                horizonDays={1}
+                position={(chartRow.sigma_move_24h ?? 0) >= 0 ? "short" : "long"}
+              />
             </div>
 
             <p className="text-xs text-muted">
-              Note: this uses a heuristic mean-reversion drift (based on the
-              24h sigma-move) to make the “too high / too low” intuition
-              explicit. “Fair” is the BSM price using realized σ from recent
-              Hyperliquid candles. This is research-y by design.
+              Caveats: this is a simple statistical model (lognormal) and does not
+              include funding, fees, slippage, or liquidation dynamics.
             </p>
           </div>
         )}

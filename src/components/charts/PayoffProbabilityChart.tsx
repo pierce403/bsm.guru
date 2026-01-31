@@ -1,34 +1,15 @@
 import { normPdf } from "@/lib/quant/normal";
-import type { OptionRight } from "@/lib/quant/bsm";
 
 type Position = "long" | "short";
 
-type BaseProps = {
+export type PayoffProbabilityChartProps = {
   spot: number;
-  prev?: number | null;
   sigma: number; // annualized
   horizonDays: number;
+  position: Position;
   width?: number;
   height?: number;
 };
-
-type SpotInstrument = {
-  kind?: "spot";
-  position: Position;
-  right?: never;
-  strike?: never;
-  premium?: never;
-};
-
-type OptionInstrument = {
-  kind: "option";
-  position: Position;
-  right: OptionRight;
-  strike: number;
-  premium: number;
-};
-
-export type PayoffProbabilityChartProps = BaseProps & (SpotInstrument | OptionInstrument);
 
 type Pt = {
   x: number;
@@ -36,10 +17,6 @@ type Pt = {
   payoff: number;
   dens: number;
 };
-
-function clamp(n: number, lo: number, hi: number) {
-  return Math.min(Math.max(n, lo), hi);
-}
 
 function lognormalPdf(x: number, mu: number, s: number) {
   if (x <= 0) return 0;
@@ -83,14 +60,9 @@ function segmentsBySign(
 
 export function PayoffProbabilityChart({
   spot,
-  prev,
   sigma,
   horizonDays,
-  kind = "spot",
   position,
-  right,
-  strike,
-  premium,
   width = 760,
   height = 260,
 }: PayoffProbabilityChartProps) {
@@ -103,20 +75,9 @@ export function PayoffProbabilityChart({
   const sRaw = sigma * Math.sqrt(Math.max(T, 0));
   const s = Math.max(sRaw, 1e-6);
 
-  const z =
-    prev && prev > 0 && sRaw > 0 && horizonDays > 0
-      ? Math.log(spot / prev) / (sigma * Math.sqrt(1 / 365))
-      : null;
-
-  // Heuristic mean-reversion: nudge the forecast mean toward prevDayPx when the
-  // last move was large in sigma terms.
-  const alpha =
-    prev && prev > 0 && z !== null ? clamp((Math.abs(z) / 3) * 0.6, 0, 0.6) : 0;
-  const target =
-    prev && prev > 0 ? spot * Math.pow(prev / spot, alpha) : spot;
-
-  // Choose mu so that E[ST] ~= target (for a lognormal with log-stddev s).
-  const mu = Math.log(Math.max(target, 1e-12)) - 0.5 * s * s;
+  // Choose mu so that E[ST] == spot (for a lognormal with log-stddev s).
+  // This is a neutral "no-drift" model for visualization.
+  const mu = Math.log(Math.max(spot, 1e-12)) - 0.5 * s * s;
 
   const k = position === "long" ? 1 : -1;
 
@@ -131,18 +92,7 @@ export function PayoffProbabilityChart({
     const ln = lnMin + t * (lnMax - lnMin);
     const x = Math.exp(ln);
     const pdf = lognormalPdf(x, mu, s);
-    let payoff = k * (x - spot);
-    if (kind === "option") {
-      const K = typeof strike === "number" && Number.isFinite(strike) ? strike : NaN;
-      const prem = typeof premium === "number" && Number.isFinite(premium) ? premium : NaN;
-      const optRight = right;
-
-      if (Number.isFinite(K) && Number.isFinite(prem) && optRight) {
-        const intrinsic =
-          optRight === "call" ? Math.max(x - K, 0) : Math.max(K - x, 0);
-        payoff = position === "long" ? intrinsic - prem : prem - intrinsic;
-      }
-    }
+    const payoff = k * (x - spot);
     const dens = payoff * pdf;
     pts.push({ x, pdf, payoff, dens });
   }
@@ -183,43 +133,14 @@ export function PayoffProbabilityChart({
   };
 
   const xSpot = xToSvg(spot);
-  const xTarget = xToSvg(target);
-  const xStrike =
-    kind === "option" && typeof strike === "number" && Number.isFinite(strike)
-      ? xToSvg(strike)
-      : null;
-
-  const breakeven =
-    kind === "option" &&
-    typeof strike === "number" &&
-    Number.isFinite(strike) &&
-    typeof premium === "number" &&
-    Number.isFinite(premium) &&
-    right
-      ? Math.max(
-          right === "call" ? strike + premium : strike - premium,
-          1e-12,
-        )
-      : null;
-
-  const xBreakeven = breakeven !== null ? xToSvg(breakeven) : null;
-
-  const footer =
-    kind === "option" &&
-    right &&
-    typeof strike === "number" &&
-    Number.isFinite(strike) &&
-    typeof premium === "number" &&
-    Number.isFinite(premium)
-      ? `${horizonDays}d horizon • ${position.toUpperCase()} ${right.toUpperCase()} K ${strike.toFixed(2)} prem ${premium.toFixed(2)} • spot ${spot.toFixed(2)}${prev ? ` • prev ${prev.toFixed(2)}` : ""}`
-      : `${horizonDays}d horizon • ${position.toUpperCase()} spot • spot ${spot.toFixed(2)}${prev ? ` • prev ${prev.toFixed(2)}` : ""}`;
+  const footer = `${horizonDays}d horizon • ${position.toUpperCase()} (linear payoff vs end price) • spot ${spot.toFixed(2)} • σ ${(sigma * 100).toFixed(1)}%/yr`;
 
   return (
     <svg
       viewBox={`0 0 ${width} ${height}`}
       className="h-auto w-full"
       role="img"
-      aria-label="Probability-weighted payoff chart"
+      aria-label="Model-based probability-weighted payoff chart"
     >
       <defs>
         <linearGradient id="bsm_pdf_stroke" x1="0" y1="0" x2="1" y2="0">
@@ -275,7 +196,7 @@ export function PayoffProbabilityChart({
         strokeWidth="2.2"
       />
 
-      {/* Spot & target markers */}
+      {/* Spot marker */}
       <line
         x1={xSpot}
         x2={xSpot}
@@ -285,41 +206,6 @@ export function PayoffProbabilityChart({
         strokeWidth="1"
         strokeDasharray="2 6"
       />
-      {Math.abs(xTarget - xSpot) > 2 ? (
-        <line
-          x1={xTarget}
-          x2={xTarget}
-          y1={pad.t}
-          y2={baseY + densH}
-          stroke="color-mix(in oklab, var(--accent2) 70%, transparent)"
-          strokeWidth="1"
-          strokeDasharray="6 6"
-        />
-      ) : null}
-
-      {/* Strike + breakeven (options only) */}
-      {xStrike !== null ? (
-        <line
-          x1={xStrike}
-          x2={xStrike}
-          y1={pad.t}
-          y2={baseY + densH}
-          stroke="color-mix(in oklab, var(--border) 80%, transparent)"
-          strokeWidth="1"
-          strokeDasharray="2 8"
-        />
-      ) : null}
-      {xBreakeven !== null ? (
-        <line
-          x1={xBreakeven}
-          x2={xBreakeven}
-          y1={pad.t}
-          y2={baseY + densH}
-          stroke="color-mix(in oklab, var(--accent) 78%, transparent)"
-          strokeWidth="1"
-          strokeDasharray="6 8"
-        />
-      ) : null}
 
       {/* Labels */}
       <text
