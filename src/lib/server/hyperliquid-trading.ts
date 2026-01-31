@@ -40,6 +40,14 @@ export type HyperliquidPlacePerpResult = {
   response: PlaceOrderResponse;
   fill: HyperliquidFill;
   proof: HyperliquidTradeProof;
+  // Execution context useful for debugging / reproducibility.
+  exec: {
+    slippageBps: number;
+    midPx: number;
+    limitPx: number;
+    qty: number;
+    attempt: number;
+  };
 };
 
 function proofForAddress(address: string): HyperliquidTradeProof {
@@ -71,6 +79,7 @@ function extractFill(res: unknown): HyperliquidFill {
     throw new Error("Unexpected order response (no statuses)");
   }
 
+  let restingOid: number | null = null;
   for (const st of statuses) {
     const filled = (st as FilledStatus)?.filled ?? null;
     if (!filled) continue;
@@ -87,9 +96,37 @@ function extractFill(res: unknown): HyperliquidFill {
     };
   }
 
+  for (const st of statuses) {
+    const resting = (st as { resting?: { oid?: string | number } } | null)?.resting ?? null;
+    const oid = toNum(resting?.oid);
+    if (oid !== null) {
+      restingOid = Math.floor(oid);
+      break;
+    }
+  }
+
   // If IOC doesn't fill, Hyperliquid may return a "resting" or other status.
   // Treat that as a failure for now since the UI expects immediate execution.
-  throw new Error("Order did not fill (no filled status)");
+  throw new Error(
+    `Order did not fill (no filled status${restingOid !== null ? `; resting oid ${restingOid}` : ""})`,
+  );
+}
+
+function uniq<T>(arr: T[]) {
+  const out: T[] = [];
+  const seen = new Set<T>();
+  for (const v of arr) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function slippageSchedule(baseBps: number) {
+  const b = Math.min(Math.max(Math.floor(baseBps), 0), 2000);
+  // Escalate quickly but cap the worst-case.
+  return uniq([b, Math.min(Math.max(b * 3, 100), 2000), Math.min(Math.max(b * 6, 200), 2000)]);
 }
 
 export async function placePerpIocOrder(opts: {
@@ -118,32 +155,15 @@ export async function placePerpIocOrder(opts: {
       response: { mock: true, symbol, side: opts.side, notionalUsd },
       fill: { oid: 1, avgPx: px, totalSz },
       proof: proofForAddress(walletAddress),
+      exec: {
+        slippageBps: 0,
+        midPx: px,
+        limitPx: px,
+        qty: totalSz,
+        attempt: 1,
+      },
     };
   }
-
-  const slippageBps = Math.min(Math.max(Math.floor(opts.slippageBps ?? 50), 0), 2000);
-  const slip = slippageBps / 10_000;
-
-  // Pull szDecimals and a mid price from Hyperliquid directly for sizing.
-  const [meta, assetCtxs] = await hyperliquidInfo<MetaAndCtxs>({
-    type: "metaAndAssetCtxs",
-  });
-  const uni: Array<{ name: string; szDecimals: number }> = meta.universe ?? [];
-  const idx = uni.findIndex((u) => u?.name === symbol);
-  if (idx < 0) throw new Error(`Unknown Hyperliquid asset: ${symbol}`);
-
-  const ctx = assetCtxs[idx] ?? null;
-  const midPx = toNum(ctx?.midPx);
-  if (midPx === null || midPx <= 0) throw new Error("No mid price for asset");
-
-  const szDecimals = toNum(uni[idx]?.szDecimals);
-  if (szDecimals === null || szDecimals < 0) throw new Error("No szDecimals for asset");
-
-  const qty = roundToDecimals(notionalUsd / midPx, szDecimals);
-  if (!Number.isFinite(qty) || qty <= 0) throw new Error("Computed size is too small");
-
-  const isBuy = opts.side === "long";
-  const limitPx = isBuy ? midPx * (1 + slip) : midPx * (1 - slip);
 
   const keystoreJson = readKeystore(walletAddress);
   const signer = await Wallet.fromEncryptedJson(keystoreJson, opts.password ?? "");
@@ -160,22 +180,67 @@ export async function placePerpIocOrder(opts: {
     testnet: process.env.HYPERLIQUID_TESTNET === "true",
   });
 
-  const res = (await sdk.exchange.placeOrder({
-    coin: `${symbol}-PERP`,
-    is_buy: isBuy,
-    sz: qty,
-    limit_px: limitPx,
-    order_type: { limit: { tif: "Ioc" } },
-    reduce_only: false,
-  })) as PlaceOrderResponse;
+  // IOC can fail to fill when the spread is wider than our slip.
+  // Retry a few times with higher slippage before giving up.
+  const slips = slippageSchedule(opts.slippageBps ?? 50);
+  let lastNoFill: Error | null = null;
 
-  const fill = extractFill(res);
+  for (let attempt = 0; attempt < slips.length; attempt++) {
+    const slippageBps = slips[attempt]!;
+    const slip = slippageBps / 10_000;
 
-  return {
-    response: res,
-    fill,
-    proof: proofForAddress(walletAddress),
-  };
+    // Pull szDecimals and a mid price from Hyperliquid directly for sizing.
+    const [meta, assetCtxs] = await hyperliquidInfo<MetaAndCtxs>({
+      type: "metaAndAssetCtxs",
+    });
+    const uni: Array<{ name: string; szDecimals: number }> = meta.universe ?? [];
+    const idx = uni.findIndex((u) => u?.name === symbol);
+    if (idx < 0) throw new Error(`Unknown Hyperliquid asset: ${symbol}`);
+
+    const ctx = assetCtxs[idx] ?? null;
+    const midPx = toNum(ctx?.midPx);
+    if (midPx === null || midPx <= 0) throw new Error("No mid price for asset");
+
+    const szDecimals = toNum(uni[idx]?.szDecimals);
+    if (szDecimals === null || szDecimals < 0) throw new Error("No szDecimals for asset");
+
+    const qty = roundToDecimals(notionalUsd / midPx, szDecimals);
+    if (!Number.isFinite(qty) || qty <= 0) throw new Error("Computed size is too small");
+
+    const isBuy = opts.side === "long";
+    const limitPx = isBuy ? midPx * (1 + slip) : midPx * (1 - slip);
+
+    try {
+      const res = (await sdk.exchange.placeOrder({
+        coin: `${symbol}-PERP`,
+        is_buy: isBuy,
+        sz: qty,
+        limit_px: limitPx,
+        order_type: { limit: { tif: "Ioc" } },
+        reduce_only: false,
+      })) as PlaceOrderResponse;
+
+      const fill = extractFill(res);
+      return {
+        response: res,
+        fill,
+        proof: proofForAddress(walletAddress),
+        exec: { slippageBps, midPx, limitPx, qty, attempt: attempt + 1 },
+      };
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error("Order failed");
+      if (err.message.startsWith("Order did not fill")) {
+        lastNoFill = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(
+    `${lastNoFill?.message ?? "Order did not fill"} (try increasing slippage or reducing size)`,
+  );
+
 }
 
 export async function closePerpIocOrder(opts: {
@@ -203,29 +268,9 @@ export async function closePerpIocOrder(opts: {
       response: { mock: true, symbol, closeSide: opts.closeSide, qty },
       fill: { oid: 2, avgPx: px, totalSz: qty },
       proof: proofForAddress(walletAddress),
+      exec: { slippageBps: 0, midPx: px, limitPx: px, qty, attempt: 1 },
     };
   }
-
-  const slippageBps = Math.min(Math.max(Math.floor(opts.slippageBps ?? 50), 0), 2000);
-  const slip = slippageBps / 10_000;
-
-  const [meta, assetCtxs] = await hyperliquidInfo<MetaAndCtxs>({
-    type: "metaAndAssetCtxs",
-  });
-  const uni: Array<{ name: string; szDecimals: number }> = meta.universe ?? [];
-  const idx = uni.findIndex((u) => u?.name === symbol);
-  if (idx < 0) throw new Error(`Unknown Hyperliquid asset: ${symbol}`);
-
-  const ctx = assetCtxs[idx] ?? null;
-  const midPx = toNum(ctx?.midPx);
-  if (midPx === null || midPx <= 0) throw new Error("No mid price for asset");
-
-  const szDecimals = toNum(uni[idx]?.szDecimals);
-  if (szDecimals === null || szDecimals < 0) throw new Error("No szDecimals for asset");
-
-  const roundedQty = roundToDecimals(qty, szDecimals);
-  const isBuy = opts.closeSide === "buy";
-  const limitPx = isBuy ? midPx * (1 + slip) : midPx * (1 - slip);
 
   const keystoreJson = readKeystore(walletAddress);
   const signer = await Wallet.fromEncryptedJson(keystoreJson, opts.password ?? "");
@@ -240,20 +285,59 @@ export async function closePerpIocOrder(opts: {
     testnet: process.env.HYPERLIQUID_TESTNET === "true",
   });
 
-  const res = (await sdk.exchange.placeOrder({
-    coin: `${symbol}-PERP`,
-    is_buy: isBuy,
-    sz: roundedQty,
-    limit_px: limitPx,
-    order_type: { limit: { tif: "Ioc" } },
-    reduce_only: true,
-  })) as PlaceOrderResponse;
+  const slips = slippageSchedule(opts.slippageBps ?? 50);
+  let lastNoFill: Error | null = null;
 
-  const fill = extractFill(res);
+  for (let attempt = 0; attempt < slips.length; attempt++) {
+    const slippageBps = slips[attempt]!;
+    const slip = slippageBps / 10_000;
 
-  return {
-    response: res,
-    fill,
-    proof: proofForAddress(walletAddress),
-  };
+    const [meta, assetCtxs] = await hyperliquidInfo<MetaAndCtxs>({
+      type: "metaAndAssetCtxs",
+    });
+    const uni: Array<{ name: string; szDecimals: number }> = meta.universe ?? [];
+    const idx = uni.findIndex((u) => u?.name === symbol);
+    if (idx < 0) throw new Error(`Unknown Hyperliquid asset: ${symbol}`);
+
+    const ctx = assetCtxs[idx] ?? null;
+    const midPx = toNum(ctx?.midPx);
+    if (midPx === null || midPx <= 0) throw new Error("No mid price for asset");
+
+    const szDecimals = toNum(uni[idx]?.szDecimals);
+    if (szDecimals === null || szDecimals < 0) throw new Error("No szDecimals for asset");
+
+    const roundedQty = roundToDecimals(qty, szDecimals);
+    const isBuy = opts.closeSide === "buy";
+    const limitPx = isBuy ? midPx * (1 + slip) : midPx * (1 - slip);
+
+    try {
+      const res = (await sdk.exchange.placeOrder({
+        coin: `${symbol}-PERP`,
+        is_buy: isBuy,
+        sz: roundedQty,
+        limit_px: limitPx,
+        order_type: { limit: { tif: "Ioc" } },
+        reduce_only: true,
+      })) as PlaceOrderResponse;
+
+      const fill = extractFill(res);
+      return {
+        response: res,
+        fill,
+        proof: proofForAddress(walletAddress),
+        exec: { slippageBps, midPx, limitPx, qty: roundedQty, attempt: attempt + 1 },
+      };
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error("Order failed");
+      if (err.message.startsWith("Order did not fill")) {
+        lastNoFill = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(
+    `${lastNoFill?.message ?? "Order did not fill"} (try increasing slippage)`,
+  );
 }

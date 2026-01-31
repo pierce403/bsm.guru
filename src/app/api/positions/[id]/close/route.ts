@@ -109,6 +109,7 @@ export async function POST(
       closed_pnl: pos.closed_pnl,
       hl_oid: trade.fill.oid,
       proof: trade.proof,
+      exec: trade.exec,
     });
 
     return NextResponse.json({

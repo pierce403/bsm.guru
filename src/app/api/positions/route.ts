@@ -84,6 +84,7 @@ export async function POST(req: Request) {
           avgPx: trade.fill.avgPx,
           totalSz: trade.fill.totalSz,
           proof: trade.proof,
+          exec: trade.exec,
         },
       },
     });
