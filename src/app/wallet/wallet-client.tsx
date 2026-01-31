@@ -29,6 +29,24 @@ type ArbBalancesResponse =
     }
   | { error: string };
 
+type HyperliquidStateResponse =
+  | {
+      ts: number;
+      user: string;
+      spot: {
+        balances: Array<{
+          coin: string;
+          total: string;
+          hold: string;
+        }>;
+      };
+      perps: {
+        withdrawable?: string;
+        marginSummary?: { accountValue?: string; totalMarginUsed?: string };
+      };
+    }
+  | { error: string };
+
 type DepositFromEthResponse =
   | {
       ts: number;
@@ -108,6 +126,8 @@ export function WalletClient() {
   const [copied, setCopied] = useState(false);
   const [arbBalances, setArbBalances] = useState<ArbBalancesResponse | null>(null);
   const [arbLoading, setArbLoading] = useState(false);
+  const [hlState, setHlState] = useState<HyperliquidStateResponse | null>(null);
+  const [hlLoading, setHlLoading] = useState(false);
 
   const [walletPassword, setWalletPassword] = useState("");
   const [ethToConvert, setEthToConvert] = useState("0.05");
@@ -270,11 +290,35 @@ export function WalletClient() {
     }
   }, [selectedWallet]);
 
+  const refreshHlState = useCallback(async () => {
+    const addr = selectedWallet?.address;
+    if (!addr) {
+      setHlState(null);
+      return;
+    }
+    setHlLoading(true);
+    try {
+      const data = await fetchJson<HyperliquidStateResponse>(
+        `/api/hyperliquid/state/${addr}`,
+        { cache: "no-store" },
+      );
+      setHlState(data);
+    } finally {
+      setHlLoading(false);
+    }
+  }, [selectedWallet]);
+
   useEffect(() => {
     void refreshArbBalances();
     const id = window.setInterval(() => void refreshArbBalances(), 15_000);
     return () => window.clearInterval(id);
   }, [refreshArbBalances]);
+
+  useEffect(() => {
+    void refreshHlState();
+    const id = window.setInterval(() => void refreshHlState(), 15_000);
+    return () => window.clearInterval(id);
+  }, [refreshHlState]);
 
   const depositFromEth = useCallback(
     async (ethAmount: string) => {
@@ -568,7 +612,7 @@ export function WalletClient() {
                 {"error" in (arbBalances ?? {}) ? (
                   <p className="mt-3 text-sm text-danger">{(arbBalances as { error: string }).error}</p>
                 ) : (
-                  <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
                     <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
                       <p className="text-[11px] font-medium text-muted">ETH</p>
                       <p className="mt-1 font-mono text-sm text-foreground">
@@ -745,6 +789,57 @@ export function WalletClient() {
                   </p>
                 </div>
               </div>
+            </div>
+
+            <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted">Hyperliquid balances</p>
+                  <p className="text-sm text-muted">
+                    {hlLoading ? "Refreshing…" : "auto-refreshing"}
+                  </p>
+                </div>
+                <Button variant="ghost" disabled={!selectedWallet} onClick={() => void refreshHlState()}>
+                  Refresh
+                </Button>
+              </div>
+
+              {"error" in (hlState ?? {}) ? (
+                <p className="mt-3 text-sm text-danger">{(hlState as { error: string }).error}</p>
+              ) : (
+                <div className="mt-4 grid grid-cols-3 gap-3 text-xs">
+                  <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                    <p className="text-[11px] font-medium text-muted">Perps withdrawable</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {hlState && !("error" in hlState) ? (hlState.perps.withdrawable ?? "—") : "—"}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                    <p className="text-[11px] font-medium text-muted">Perps account value</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {hlState && !("error" in hlState)
+                        ? (hlState.perps.marginSummary?.accountValue ?? "—")
+                        : "—"}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                    <p className="text-[11px] font-medium text-muted">Spot USDC total</p>
+                    <p className="mt-1 font-mono text-sm text-foreground">
+                      {(() => {
+                        if (!hlState || "error" in hlState) return "—";
+                        const usdc = hlState.spot.balances.find((b) => b.coin === "USDC");
+                        return usdc?.total ?? "—";
+                      })()}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <p className="mt-3 text-xs text-muted">
+                Deposits from Arbitrum USDC typically credit your Hyperliquid perps account. If you
+                deposited and don’t see “Spot USDC”, you may need to transfer from perps ↔ spot inside
+                Hyperliquid.
+              </p>
             </div>
 
             <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
