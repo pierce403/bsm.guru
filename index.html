@@ -424,6 +424,24 @@ pnpm build</code></pre>
             </p>
           </div>
         </div>
+
+        <div class="section" id="install" style="margin-top: 18px">
+          <h2>Install / clone</h2>
+          <p class="sub">
+            If you want to run the tool from source, clone the repo and use the included runner script.
+          </p>
+
+          <div class="callout">
+            <div class="mono"><strong>Clone + run:</strong></div>
+            <pre><code>git clone https://github.com/pierce403/bsm.guru.git
+cd bsm.guru
+./run.sh</code></pre>
+            <p class="kicker">
+              If you prefer, you can also run the usual Next.js commands (<span class="mono">pnpm dev</span>),
+              but <span class="mono">./run.sh</span> handles the local sync loop.
+            </p>
+          </div>
+        </div>
       </div>
 
       <div class="section" id="theory">
@@ -559,6 +577,40 @@ pnpm build</code></pre>
         </div>
       </div>
 
+      <div class="section" id="contributing">
+        <h2>Contributing</h2>
+        <p class="sub">
+          Contributions are welcome. If you have ideas for better signals, safer execution, or clearer UX,
+          please jump in.
+        </p>
+
+        <div class="grid">
+          <div class="card span6">
+            <h3>Good starter contributions</h3>
+            <p>
+              Improve signal definitions, add risk controls (cooldowns, max daily trades), add better
+              observability (dashboards, structured logs), and expand Playwright coverage for wallet and
+              trading flows.
+            </p>
+          </div>
+          <div class="card span6">
+            <h3>How to contribute</h3>
+            <p>
+              Open an issue describing the change, then submit a PR. Please keep commits small, run the
+              quality gates, and include a short note on how you tested.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout" style="margin-top: 14px">
+          <div class="mono"><strong>Before opening a PR:</strong></div>
+          <pre><code>pnpm lint
+pnpm test
+pnpm build
+pnpm playwright test</code></pre>
+        </div>
+      </div>
+
       <div class="footer">
         <div>
           <span class="mono">bsm.guru</span> - BSM-inspired perp screening and execution for Hyperliquid
@@ -568,4 +620,3 @@ pnpm build</code></pre>
     </div>
   </body>
 </html>
-
