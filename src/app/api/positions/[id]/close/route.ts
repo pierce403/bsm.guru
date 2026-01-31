@@ -46,11 +46,28 @@ export async function POST(
     const wallet = typeof meta.wallet === "string" ? meta.wallet : "";
     const hl = meta.hl && typeof meta.hl === "object" ? (meta.hl as Record<string, unknown>) : null;
     const hlMode = hl && typeof hl.mode === "string" ? hl.mode : null;
+    const tradingMode = (process.env.BSM_TRADING_MODE ?? "").toLowerCase();
 
     // Legacy/local-only positions (pre-trading), or mock-trading positions (tests),
     // cannot be closed on Hyperliquid. Close locally instead.
-    if (!wallet || !hl || !hlMode) {
-      const pos = closePosition(id);
+    //
+    // Important nuance:
+    // - In Playwright (BSM_TRADING_MODE=mock) we still want to return mock trade + proof.
+    // - In normal local usage, a mock/legacy position should close locally.
+    if (!wallet || !hl || !hlMode || (hlMode !== "real" && tradingMode !== "mock")) {
+      const pos = (() => {
+        try {
+          return closePosition(id);
+        } catch (e) {
+          // Local-only positions for non-HL symbols (e.g. tests) won't have a DB mid.
+          // Close them at entry price (pnl=0) rather than failing.
+          const msg = e instanceof Error ? e.message : "";
+          if (msg.includes("No mid price for")) {
+            return closePositionWithExit({ id, exitPx: existing.entry_px, exitTs: Date.now() });
+          }
+          throw e;
+        }
+      })();
       await logTradeEvent(req, {
         action: "positions.close",
         ok: true,

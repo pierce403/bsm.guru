@@ -36,6 +36,9 @@ export async function logWalletEvent(req: Request, line: LogLine) {
 
   try {
     await appendJsonLine("wallet.log", meta);
+    if (line.ok === false || typeof line.error === "string") {
+      await appendJsonLine("error.log", { ...meta, category: "wallet" });
+    }
   } catch {
     // Logging must never break core functionality.
   }
@@ -52,6 +55,25 @@ export async function logTradeEvent(req: Request, line: LogLine) {
 
   try {
     await appendJsonLine("trade.log", meta);
+    if (line.ok === false || typeof line.error === "string") {
+      await appendJsonLine("error.log", { ...meta, category: "trade" });
+    }
+  } catch {
+    // Logging must never break core functionality.
+  }
+}
+
+export async function logErrorEvent(req: Request, line: LogLine) {
+  const meta: LogLine = {
+    ts: Date.now(),
+    host: req.headers.get("host"),
+    ip: clientIp(req),
+    ua: req.headers.get("user-agent"),
+    ...line,
+  };
+
+  try {
+    await appendJsonLine("error.log", meta);
   } catch {
     // Logging must never break core functionality.
   }
