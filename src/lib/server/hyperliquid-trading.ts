@@ -111,6 +111,16 @@ export async function placePerpIocOrder(opts: {
   const notionalUsd = toNum(opts.notionalUsd);
   if (notionalUsd === null || notionalUsd <= 0) throw new Error("Invalid notional");
 
+  if ((process.env.BSM_TRADING_MODE ?? "").toLowerCase() === "mock") {
+    const px = symbol === "BTC" ? 100_000 : symbol === "ETH" ? 3000 : 100;
+    const totalSz = notionalUsd / px;
+    return {
+      response: { mock: true, symbol, side: opts.side, notionalUsd },
+      fill: { oid: 1, avgPx: px, totalSz },
+      proof: proofForAddress(walletAddress),
+    };
+  }
+
   const slippageBps = Math.min(Math.max(Math.floor(opts.slippageBps ?? 50), 0), 2000);
   const slip = slippageBps / 10_000;
 
@@ -186,6 +196,15 @@ export async function closePerpIocOrder(opts: {
 
   const qty = toNum(opts.qty);
   if (qty === null || qty <= 0) throw new Error("Invalid qty");
+
+  if ((process.env.BSM_TRADING_MODE ?? "").toLowerCase() === "mock") {
+    const px = symbol === "BTC" ? 100_000 : symbol === "ETH" ? 3000 : 100;
+    return {
+      response: { mock: true, symbol, closeSide: opts.closeSide, qty },
+      fill: { oid: 2, avgPx: px, totalSz: qty },
+      proof: proofForAddress(walletAddress),
+    };
+  }
 
   const slippageBps = Math.min(Math.max(Math.floor(opts.slippageBps ?? 50), 0), 2000);
   const slip = slippageBps / 10_000;
