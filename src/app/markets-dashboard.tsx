@@ -683,6 +683,12 @@ export function MarketsDashboard() {
     return set;
   }, [positions]);
 
+  const hypurrscanUrl = useMemo(() => {
+    const w = activeWallet;
+    if (!w) return null;
+    return `https://hypurrscan.io/address/${w.toLowerCase()}`;
+  }, [activeWallet]);
+
   return (
     <main className="space-y-8">
       <Card className="p-0">
@@ -806,7 +812,6 @@ export function MarketsDashboard() {
                   <th className="px-6 py-3 font-medium">Entry</th>
                   <th className="px-6 py-3 font-medium">Current</th>
                   <th className="px-6 py-3 font-medium">Value</th>
-                  <th className="px-6 py-3 font-medium">Proof</th>
                   <th className="px-6 py-3 font-medium">Health</th>
                   <th className="px-6 py-3 font-medium">Exit</th>
                 </tr>
@@ -830,21 +835,6 @@ export function MarketsDashboard() {
                         : p.health_action === "hold"
                           ? "text-success"
                           : "text-muted";
-
-                  const proofUrl = (() => {
-                    try {
-                      const meta = p.meta_json
-                        ? (JSON.parse(p.meta_json) as Record<string, unknown>)
-                        : null;
-                      const hl = meta && typeof meta.hl === "object" ? (meta.hl as Record<string, unknown>) : null;
-                      const proof =
-                        hl && typeof hl.proof === "object" ? (hl.proof as Record<string, unknown>) : null;
-                      const url = proof ? proof.hypurrscanAddressUrl : null;
-                      return typeof url === "string" ? url : null;
-                    } catch {
-                      return null;
-                    }
-                  })();
 
                   return (
                     <tr key={p.id} className="hover:bg-background/40">
@@ -879,21 +869,6 @@ export function MarketsDashboard() {
                             ? "pnl —"
                             : `pnl ${formatCompact(p.pnl)} (${p.pnl_pct === null ? "—" : formatPercent(p.pnl_pct)})`}
                         </p>
-                      </td>
-
-                      <td className="border-t border-border/60 px-6 py-3">
-                        {proofUrl ? (
-                          <a
-                            href={proofUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-sm font-medium text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                          >
-                            Hypurrscan
-                          </a>
-                        ) : (
-                          <span className="text-sm text-muted">—</span>
-                        )}
                       </td>
 
                       <td className="border-t border-border/60 px-6 py-3">
@@ -932,6 +907,23 @@ export function MarketsDashboard() {
             </table>
           </div>
         )}
+
+        {hypurrscanUrl ? (
+          <div className="border-t border-border/60 px-6 py-4">
+            <p className="text-xs text-muted">
+              View account activity on{" "}
+              <a
+                href={hypurrscanUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+              >
+                Hypurrscan
+              </a>
+              .
+            </p>
+          </div>
+        ) : null}
       </Card>
 
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">

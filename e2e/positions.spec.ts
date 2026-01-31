@@ -32,7 +32,8 @@ test("enter + exit position hits Hyperliquid mock trading and shows proof links"
   // Open positions table should include BTC and a proof link.
   const row = page.locator("tr", { hasText: symbol }).first();
   await expect(row).toBeVisible();
-  await expect(row.getByRole("link", { name: "Hypurrscan" })).toBeVisible();
+  // Proof is surfaced as a global account link now (not per-position).
+  await expect(page.getByRole("link", { name: "Hypurrscan" }).first()).toBeVisible();
 
   // Exit the position and confirm it disappears.
   await row.getByRole("button", { name: "Exit" }).click();
