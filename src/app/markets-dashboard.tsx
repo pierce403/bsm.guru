@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
+import { computePerpContrarianSignal } from "@/lib/strategy/perp-signal";
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
 const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeUsdcOverride.";
@@ -23,6 +24,8 @@ type SummaryRow = {
   mid: number;
   prev_day_px: number | null;
   day_ntl_vlm: number | null;
+  funding: number | null;
+  premium: number | null;
   realized_vol: number | null;
   sigma_move_24h: number | null;
   tail_prob_24h: number | null;
@@ -67,6 +70,8 @@ type OpenPosition = {
   sigma_move_24h: number | null;
   tail_prob_24h: number | null;
   ret_24h: number | null;
+  funding: number | null;
+  premium: number | null;
   pnl: number | null;
   pnl_pct: number | null;
   value: number | null;
@@ -134,6 +139,16 @@ function formatPx(n: number) {
 
 function formatPercent(n: number) {
   return `${(n * 100).toFixed(2)}%`;
+}
+
+function formatBps(n: number) {
+  if (!Number.isFinite(n)) return String(n);
+  return `${n.toFixed(Math.abs(n) < 10 ? 2 : 1)}bps`;
+}
+
+function formatMaybeBpsFromDecimalRate(n: number | null) {
+  if (n === null || !Number.isFinite(n)) return "—";
+  return formatBps(n * 10_000);
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -434,12 +449,17 @@ export function MarketsDashboard() {
     return rows
       .filter((r) => r.sigma_move_24h !== null && r.realized_vol !== null)
       .map((r) => {
+        const signal = computePerpContrarianSignal({
+          sigmaMove24h: r.sigma_move_24h,
+          dayNtlVlm: r.day_ntl_vlm,
+          fundingRate: r.funding,
+          premium: r.premium,
+        });
         const z = r.sigma_move_24h ?? 0;
-        const abs = Math.abs(z);
-        const liq = Math.log10((r.day_ntl_vlm ?? 1) + 1);
-        const score = abs * (1 + liq);
-        const side: PositionSide = z >= 0 ? "short" : "long";
-        return { symbol: r.symbol, side, score, absZ: abs, z };
+        const absZ = Math.abs(z);
+        const side: PositionSide = signal?.side ?? (z >= 0 ? "short" : "long");
+        const score = signal?.score ?? absZ;
+        return { symbol: r.symbol, side, score, absZ, z };
       })
       .filter((c) => c.absZ >= autoEnterMinAbsSigma)
       .sort((a, b) => b.score - a.score);
@@ -607,21 +627,23 @@ export function MarketsDashboard() {
     const candidates = rows
       .filter((r) => r.sigma_move_24h !== null && r.realized_vol !== null)
       .map((r) => {
-        const z = r.sigma_move_24h ?? 0;
-        const abs = Math.abs(z);
-        const liq = Math.log10((r.day_ntl_vlm ?? 1) + 1);
-        const score = abs * (1 + liq);
-        return { r, score };
+        const signal = computePerpContrarianSignal({
+          sigmaMove24h: r.sigma_move_24h,
+          dayNtlVlm: r.day_ntl_vlm,
+          fundingRate: r.funding,
+          premium: r.premium,
+        });
+        return { r, signal, score: signal?.score ?? 0 };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
-      .map(({ r }) => {
+      .map(({ r, signal }) => {
         const z = r.sigma_move_24h ?? 0;
         const abs = Math.abs(z);
         const tail = r.tail_prob_24h;
         const sigma = r.realized_vol;
 
-        const side: PositionSide = z >= 0 ? "short" : "long";
+        const side: PositionSide = signal?.side ?? (z >= 0 ? "short" : "long");
         const direction = side === "short" ? "Short" : "Long";
         const style =
           abs >= 2.5
@@ -633,10 +655,20 @@ export function MarketsDashboard() {
         const title = `${direction} ${r.symbol}`;
         const subtitle = style;
 
+        const fundingText =
+          r.funding === null ? "—" : formatBps(r.funding * 10_000);
+        const premiumText =
+          r.premium === null ? "—" : formatBps(r.premium * 10_000);
+
+        const carryNote =
+          r.funding === null && r.premium === null
+            ? ""
+            : ` Funding ${fundingText} • premium ${premiumText}.`;
+
         const rationale =
           tail !== null && sigma !== null
-            ? `24h move is ${abs.toFixed(2)}σ (tail p ${(tail * 100).toFixed(2)}%) with realized σ ${(sigma * 100).toFixed(1)}%.`
-            : `24h move is ${abs.toFixed(2)}σ.`;
+            ? `24h move is ${abs.toFixed(2)}σ (tail p ${(tail * 100).toFixed(2)}%) with realized σ ${(sigma * 100).toFixed(1)}%.${carryNote}`
+            : `24h move is ${abs.toFixed(2)}σ.${carryNote}`;
 
         const stats: Recommendation["stats"] = [
           {
@@ -648,6 +680,26 @@ export function MarketsDashboard() {
             label: "Tail p",
             value: tail === null ? "—" : `${(tail * 100).toFixed(2)}%`,
             tone: tail !== null && tail < 0.05 ? "bad" : "muted",
+          },
+          {
+            label: "Funding",
+            value: formatMaybeBpsFromDecimalRate(r.funding),
+            tone:
+              signal && signal.fundingAlignBps !== null
+                ? signal.fundingAlignBps >= 0
+                  ? "good"
+                  : "bad"
+                : "muted",
+          },
+          {
+            label: "Premium",
+            value: r.premium === null ? "—" : formatBps(r.premium * 10_000),
+            tone:
+              signal && signal.premiumAlignBps !== null
+                ? signal.premiumAlignBps >= 0
+                  ? "good"
+                  : "bad"
+                : "muted",
           },
           {
             label: "Realized σ",
@@ -883,7 +935,7 @@ export function MarketsDashboard() {
                         <p className="mt-1 text-[11px] font-mono text-muted">
                           {p.sigma_move_24h === null || p.tail_prob_24h === null
                             ? "z — • tail —"
-                            : `z ${p.sigma_move_24h.toFixed(2)} • tail ${(p.tail_prob_24h * 100).toFixed(2)}%`}
+                            : `z ${p.sigma_move_24h.toFixed(2)} • tail ${(p.tail_prob_24h * 100).toFixed(2)}% • fund ${formatMaybeBpsFromDecimalRate(p.funding)} • prem ${p.premium === null ? "—" : formatBps(p.premium * 10_000)}`}
                         </p>
                       </td>
 

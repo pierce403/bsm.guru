@@ -11,6 +11,8 @@ type Row = {
   mid: number;
   prev_day_px: number | null;
   day_ntl_vlm: number | null;
+  funding: number | null;
+  premium: number | null;
   realized_vol: number | null;
   sigma_move_24h: number | null;
   tail_prob_24h: number | null;
@@ -33,8 +35,20 @@ export async function GET(req: Request) {
 
   const rows = db
     .prepare(
-      `SELECT symbol, ts, mid, prev_day_px, day_ntl_vlm, realized_vol, sigma_move_24h, tail_prob_24h, ret_24h
-       FROM market_metrics_latest
+      `SELECT
+         m.symbol,
+         m.ts,
+         m.mid,
+         m.prev_day_px,
+         m.day_ntl_vlm,
+         c.funding,
+         c.premium,
+         m.realized_vol,
+         m.sigma_move_24h,
+         m.tail_prob_24h,
+         m.ret_24h
+       FROM market_metrics_latest m
+       LEFT JOIN asset_ctx_latest c ON c.symbol = m.symbol
        ORDER BY day_ntl_vlm DESC
        LIMIT ?`,
     )
@@ -48,4 +62,3 @@ export async function GET(req: Request) {
     rows,
   });
 }
-
