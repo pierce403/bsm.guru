@@ -9,6 +9,7 @@ const ARB_CHAIN_ID = 42161;
 // Common Arbitrum addresses (verify before changing; these are widely-used canonical deployments).
 const WETH_ARB = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1";
 const USDC_ARB = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"; // native USDC (6 decimals)
+const USDC_E_ARB = "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8"; // USDC.e (bridged) (6 decimals)
 const UNISWAP_V3_QUOTER = "0xb27308f9f90d607463bb33ea1bebb41c27ce5ab6";
 const UNISWAP_V3_SWAP_ROUTER_02 = "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45";
 
@@ -43,17 +44,25 @@ export async function getArbitrumBalances(address: string) {
     "function decimals() view returns (uint8)",
   ]);
 
-  const usdcBal = await provider.call({
-    to: USDC_ARB,
-    data: erc20.encodeFunctionData("balanceOf", [address]),
-  });
-  const usdcWei = (erc20.decodeFunctionResult("balanceOf", usdcBal) as unknown as [bigint])[0];
+  const [usdcRes, usdceRes] = await Promise.all([
+    provider.call({
+      to: USDC_ARB,
+      data: erc20.encodeFunctionData("balanceOf", [address]),
+    }),
+    provider.call({
+      to: USDC_E_ARB,
+      data: erc20.encodeFunctionData("balanceOf", [address]),
+    }),
+  ]);
+  const usdcWei = (erc20.decodeFunctionResult("balanceOf", usdcRes) as unknown as [bigint])[0];
+  const usdceWei = (erc20.decodeFunctionResult("balanceOf", usdceRes) as unknown as [bigint])[0];
 
   return {
     chainId: ARB_CHAIN_ID,
     ethWei: ethWei.toString(),
     eth: formatEther(ethWei),
     usdcUnits: usdcWei.toString(),
+    usdceUnits: usdceWei.toString(),
     // USDC is 6 decimals; keep raw units for UI formatting.
   };
 }
@@ -64,6 +73,14 @@ export type EthToHyperliquidDepositResult = {
   ethInWei: string;
   usdcOutUnits: string;
   swapTxHash: string;
+  depositTxHash: string;
+};
+
+export type UsdcDepositResult = {
+  chainId: number;
+  from: string;
+  token: "usdc" | "usdce";
+  usdcUnits: string;
   depositTxHash: string;
 };
 
@@ -79,6 +96,10 @@ const usdcIface = new Interface([
   "function balanceOf(address) view returns (uint256)",
   "function transfer(address to,uint256 amount) returns (bool)",
 ]);
+
+function usdcTokenFor(token: "usdc" | "usdce") {
+  return token === "usdc" ? USDC_ARB : USDC_E_ARB;
+}
 
 function bpsToMul(bps: number) {
   const clamped = Math.min(Math.max(Math.floor(bps), 0), 10_000);
@@ -212,3 +233,53 @@ export async function swapEthToUsdcAndDepositToHyperliquid(opts: {
   };
 }
 
+export async function depositUsdcToHyperliquid(opts: {
+  fromAddress: string;
+  token: "usdc" | "usdce";
+  usdcUnits: string;
+  password?: string;
+}): Promise<UsdcDepositResult> {
+  const from = opts.fromAddress.toLowerCase();
+  if (!isAddress(from)) throw new Error("Invalid from address");
+
+  const units = BigInt(opts.usdcUnits);
+  if (units <= BigInt(0)) throw new Error("usdcUnits must be > 0");
+  if (units < BigInt(5_000_000)) {
+    throw new Error("Deposit amount is below the Hyperliquid minimum deposit (5 USDC)");
+  }
+
+  const provider = getArbitrumProvider();
+  const keystoreJson = readKeystore(from);
+  const wallet = await Wallet.fromEncryptedJson(keystoreJson, opts.password ?? "");
+  if (wallet.address.toLowerCase() !== from) {
+    throw new Error("Keystore does not match the requested from address");
+  }
+  const signer = wallet.connect(provider);
+
+  const tokenAddr = usdcTokenFor(opts.token);
+
+  // NOTE: Hyperliquid accepts USDC deposits on Arbitrum. Some users may hold USDC.e.
+  // We allow transferring either, but the user should verify which token Hyperliquid
+  // currently credits as a deposit.
+  const balRes = await provider.call({
+    to: tokenAddr,
+    data: usdcIface.encodeFunctionData("balanceOf", [from]),
+  });
+  const bal = (usdcIface.decodeFunctionResult("balanceOf", balRes) as unknown as [bigint])[0];
+  if (bal < units) throw new Error("Insufficient USDC balance");
+
+  const tx = await signer.sendTransaction({
+    to: tokenAddr,
+    data: usdcIface.encodeFunctionData("transfer", [HYPERLIQUID_BRIDGE2_ARB, units]),
+    value: BigInt(0),
+  });
+  await tx.wait();
+
+  return {
+    chainId: ARB_CHAIN_ID,
+    from,
+    token: opts.token,
+    usdcUnits: units.toString(),
+    depositTxHash: tx.hash,
+  };
+}

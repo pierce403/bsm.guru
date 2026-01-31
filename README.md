@@ -19,6 +19,7 @@ Black-Scholes-Merton tooling for spotting relative value in crypto options.
 - `GET/POST /api/wallets` + `GET /api/wallets/:address/keystore`
 - `GET /api/arbitrum/balances/:address` (Arbitrum ETH + USDC)
 - `POST /api/hyperliquid/deposit-from-eth` (swap Arbitrum ETH -> USDC, then deposit)
+- `POST /api/hyperliquid/deposit-usdc` (deposit existing USDC/USDC.e)
 - Quant libs:
   - `src/lib/quant/bsm.ts` (price/greeks/implied vol)
   - `src/lib/quant/vol.ts` (realized vol)

@@ -25,6 +25,7 @@ type ArbBalancesResponse =
       ethWei: string;
       eth: string;
       usdcUnits: string;
+      usdceUnits: string;
     }
   | { error: string };
 
@@ -37,6 +38,19 @@ type DepositFromEthResponse =
         ethInWei: string;
         usdcOutUnits: string;
         swapTxHash: string;
+        depositTxHash: string;
+      };
+    }
+  | { error: string };
+
+type DepositUsdcResponse =
+  | {
+      ts: number;
+      result: {
+        chainId: number;
+        from: string;
+        token: "usdc" | "usdce";
+        usdcUnits: string;
         depositTxHash: string;
       };
     }
@@ -100,6 +114,11 @@ export function WalletClient() {
   const [depositing, setDepositing] = useState(false);
   const [depositErr, setDepositErr] = useState<string | null>(null);
   const [depositRes, setDepositRes] = useState<DepositFromEthResponse | null>(null);
+
+  const [usdcToDeposit, setUsdcToDeposit] = useState("25");
+  const [depositingUsdc, setDepositingUsdc] = useState(false);
+  const [depositUsdcErr, setDepositUsdcErr] = useState<string | null>(null);
+  const [depositUsdcRes, setDepositUsdcRes] = useState<DepositUsdcResponse | null>(null);
 
   const [autoSweep, setAutoSweep] = useState(false);
 
@@ -284,6 +303,43 @@ export function WalletClient() {
       }
     },
     [refreshArbBalances, reserveEth, selectedWallet, slippageBps, walletPassword],
+  );
+
+  const depositExistingUsdc = useCallback(
+    async (token: "usdc" | "usdce") => {
+      const addr = selectedWallet?.address;
+      if (!addr) return;
+      setDepositingUsdc(true);
+      setDepositUsdcErr(null);
+      setDepositUsdcRes(null);
+      try {
+        const amount = Number(usdcToDeposit);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          setDepositUsdcErr("Enter a valid USDC amount");
+          return;
+        }
+
+        const units = BigInt(Math.floor(amount * 1_000_000));
+        const data = await fetchJson<DepositUsdcResponse>("/api/hyperliquid/deposit-usdc", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            fromAddress: addr,
+            token,
+            usdcUnits: units.toString(),
+            password: walletPassword.trim() || undefined,
+          }),
+        });
+        setDepositUsdcRes(data);
+        if ("error" in data) setDepositUsdcErr(data.error);
+        await refreshArbBalances();
+      } catch (e) {
+        setDepositUsdcErr(e instanceof Error ? e.message : "Deposit failed");
+      } finally {
+        setDepositingUsdc(false);
+      }
+    },
+    [refreshArbBalances, selectedWallet, usdcToDeposit, walletPassword],
   );
 
   // Optional automation: if ETH arrives, swap the excess above reserve and deposit it.
@@ -518,9 +574,32 @@ export function WalletClient() {
                       </p>
                     </div>
                     <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
-                      <p className="text-[11px] font-medium text-muted">USDC</p>
+                      <p className="text-[11px] font-medium text-muted">USDC (native)</p>
                       <p className="mt-1 font-mono text-sm text-foreground">
                         {arbBalances && !("error" in arbBalances) ? formatUsdcUnits(arbBalances.usdcUnits) : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                      <p className="text-[11px] font-medium text-muted">USDC.e</p>
+                      <p className="mt-1 font-mono text-sm text-foreground">
+                        {arbBalances && !("error" in arbBalances) ? formatUsdcUnits(arbBalances.usdceUnits) : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                      <p className="text-[11px] font-medium text-muted">Explorer</p>
+                      <p className="mt-1">
+                        {selectedWallet ? (
+                          <a
+                            className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                            href={`https://arbiscan.io/address/${selectedWallet.address}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View
+                          </a>
+                        ) : (
+                          <span className="text-muted">—</span>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -641,6 +720,83 @@ export function WalletClient() {
                     This uses Uniswap v3 routing (WETH/USDC) under the hood.
                   </p>
                 </div>
+              </div>
+            </div>
+
+            <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+              <p className="text-xs font-medium text-muted">Deposit existing USDC</p>
+              <p className="mt-2 text-sm leading-6 text-muted">
+                If you already sent USDC to this wallet, you still need to deposit it into Hyperliquid.
+                This does that deposit for you by transferring USDC to the Hyperliquid Bridge2 contract.
+              </p>
+
+              <div className="mt-4 grid gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">Amount (USDC)</label>
+                    <Input
+                      inputMode="decimal"
+                      value={usdcToDeposit}
+                      onChange={(e) => setUsdcToDeposit(e.target.value)}
+                      placeholder="25"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">Wallet password (optional)</label>
+                    <Input
+                      type="password"
+                      value={walletPassword}
+                      onChange={(e) => setWalletPassword(e.target.value)}
+                      placeholder="(cached locally)"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet || depositingUsdc}
+                    onClick={() => void depositExistingUsdc("usdc")}
+                  >
+                    {depositingUsdc ? "Depositing…" : "Deposit USDC"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={!selectedWallet || depositingUsdc}
+                    onClick={() => void depositExistingUsdc("usdce")}
+                  >
+                    {depositingUsdc ? "Depositing…" : "Deposit USDC.e"}
+                  </Button>
+                </div>
+
+                {depositUsdcErr ? (
+                  <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                    {depositUsdcErr}
+                  </div>
+                ) : null}
+
+                {depositUsdcRes && !("error" in depositUsdcRes) ? (
+                  <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+                    <p>
+                      Submitted deposit of{" "}
+                      <span className="font-mono text-foreground">
+                        {formatUsdcUnits(depositUsdcRes.result.usdcUnits)} {depositUsdcRes.result.token.toUpperCase()}
+                      </span>
+                      .
+                    </p>
+                    <p className="mt-2 text-xs">
+                      Tx:{" "}
+                      <a
+                        className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                        href={`https://arbiscan.io/tx/${depositUsdcRes.result.depositTxHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {depositUsdcRes.result.depositTxHash.slice(0, 12)}…
+                      </a>
+                    </p>
+                  </div>
+                ) : null}
               </div>
             </div>
           </Card>
