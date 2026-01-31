@@ -21,6 +21,8 @@ export default defineConfig({
     env: {
       // Never place real orders in e2e runs.
       BSM_TRADING_MODE: "mock",
+      // Keep simulations deterministic + network-free in e2e.
+      BSM_SIM_MODE: "mock",
       // Keep e2e isolated from your real local DB + wallets.
       BSM_DB_PATH: "logs/_e2e/bsm.sqlite",
       BSM_WALLET_DIR: "logs/_e2e/wallets",

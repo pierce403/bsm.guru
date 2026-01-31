@@ -49,7 +49,7 @@ export async function GET(req: Request) {
          m.ret_24h
        FROM market_metrics_latest m
        LEFT JOIN asset_ctx_latest c ON c.symbol = m.symbol
-       ORDER BY day_ntl_vlm DESC
+       ORDER BY m.day_ntl_vlm DESC
        LIMIT ?`,
     )
     .all(limit) as Row[];
