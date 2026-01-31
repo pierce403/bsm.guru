@@ -26,6 +26,9 @@ export async function POST(
   try {
     assertLocalTradingUsage(req);
 
+    const body = (await req.json().catch(() => ({}))) as { password?: unknown };
+    const password = typeof body.password === "string" ? body.password : undefined;
+
     const { id: idRaw } = await params;
     const id = Number(idRaw);
     if (!Number.isFinite(id) || id <= 0) {
@@ -87,6 +90,7 @@ export async function POST(
       symbol: existing.symbol,
       qty: existing.qty,
       closeSide,
+      password,
     });
 
     const pos = closePositionWithExit({

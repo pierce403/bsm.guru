@@ -41,6 +41,7 @@ export async function POST(req: Request) {
       side?: unknown;
       notional?: unknown;
       wallet?: unknown;
+      password?: unknown;
       meta?: unknown;
     };
 
@@ -50,6 +51,7 @@ export async function POST(req: Request) {
       typeof body.notional === "number" ? body.notional : Number(body.notional);
     const notional = Number.isFinite(notionalRaw) ? notionalRaw : 1000;
     const wallet = typeof body.wallet === "string" ? body.wallet : "";
+    const password = typeof body.password === "string" ? body.password : undefined;
 
     if (!side) throw new Error("side must be 'long' or 'short'");
     if (!wallet) throw new Error("wallet is required");
@@ -59,6 +61,7 @@ export async function POST(req: Request) {
       symbol,
       side,
       notionalUsd: notional,
+      password,
     });
 
     const mode = (process.env.BSM_TRADING_MODE ?? "").toLowerCase() === "mock" ? "mock" : "real";

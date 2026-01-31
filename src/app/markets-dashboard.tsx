@@ -10,6 +10,7 @@ import { Modal } from "@/components/ui/Modal";
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
 const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeUsdcOverride.";
+const PASSWORD_LS_PREFIX = "bsm.walletPassword.";
 
 type SummaryRow = {
   symbol: string;
@@ -186,6 +187,7 @@ export function MarketsDashboard() {
   const [walletFreeUsdcOverrideText, setWalletFreeUsdcOverrideText] =
     useState("");
   const [walletErr, setWalletErr] = useState<string | null>(null);
+  const [walletPassword, setWalletPassword] = useState<string>("");
   const [enterRec, setEnterRec] = useState<Recommendation | null>(null);
   const [enterPct, setEnterPct] = useState(10);
   const [enterErr, setEnterErr] = useState<string | null>(null);
@@ -262,6 +264,18 @@ export function MarketsDashboard() {
 
       setWalletErr(null);
       setActiveWallet(selected);
+      // Pull the saved password (optional). This enables trading for wallets
+      // that were created with a password, without re-prompting here.
+      if (selected) {
+        try {
+          const savedPw = window.localStorage.getItem(`${PASSWORD_LS_PREFIX}${selected}`);
+          setWalletPassword(savedPw ?? "");
+        } catch {
+          setWalletPassword("");
+        }
+      } else {
+        setWalletPassword("");
+      }
 
       if (selected) {
         try {
@@ -284,6 +298,7 @@ export function MarketsDashboard() {
     side: PositionSide;
     notional: number;
     wallet: string;
+    password?: string;
     meta?: Record<string, unknown>;
   }) {
     setEnteringSymbol(opts.symbol);
@@ -298,6 +313,7 @@ export function MarketsDashboard() {
           side: opts.side,
           notional: opts.notional,
           wallet: opts.wallet,
+          password: opts.password,
           meta: opts.meta,
         }),
       });
@@ -306,8 +322,11 @@ export function MarketsDashboard() {
       setEnterRec(null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to enter position";
-      setEnterErr(msg);
-      setPositionsErr(msg);
+      const hint = msg.toLowerCase().includes("incorrect password")
+        ? " (Wallet is encrypted. Set the wallet password on the Wallet page, or create a new wallet with no password.)"
+        : "";
+      setEnterErr(`${msg}${hint}`);
+      setPositionsErr(`${msg}${hint}`);
     } finally {
       setEnteringSymbol(null);
       await refreshPositions();
@@ -321,7 +340,7 @@ export function MarketsDashboard() {
       const res = await fetchJson<CloseResponse>(`/api/positions/${id}/close`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ password: walletPassword || undefined }),
       });
       if ("error" in res) throw new Error(res.error);
       if (res.trade) setLastTradeProof(res.trade.proof);
@@ -1110,6 +1129,7 @@ export function MarketsDashboard() {
                       side: enterRec.side,
                       notional: allocUsd ?? 0,
                       wallet: activeWallet ?? "",
+                      password: walletPassword || undefined,
                       meta: {
                         source: "recommendation",
                         subtitle: enterRec.subtitle,
