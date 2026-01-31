@@ -24,6 +24,10 @@ type ArbBalancesResponse =
       chainId: number;
       ethWei: string;
       eth: string;
+      ethWeiPending: string;
+      ethPending: string;
+      wethWei: string;
+      weth: string;
       usdcUnits: string;
       usdceUnits: string;
     }
@@ -99,6 +103,14 @@ function formatUsdcUnits(units: string) {
   if (!Number.isFinite(n)) return units;
   // USDC 6 decimals
   return (n / 1_000_000).toFixed(2);
+}
+
+function maybeDiff(a: string, b: string) {
+  const na = Number(a);
+  const nb = Number(b);
+  if (!Number.isFinite(na) || !Number.isFinite(nb)) return null;
+  const d = na - nb;
+  return Math.abs(d) > 1e-9 ? d : null;
 }
 
 function formatTs(ts: number) {
@@ -612,12 +624,21 @@ export function WalletClient() {
                 {"error" in (arbBalances ?? {}) ? (
                   <p className="mt-3 text-sm text-danger">{(arbBalances as { error: string }).error}</p>
                 ) : (
-                <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
                     <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
-                      <p className="text-[11px] font-medium text-muted">ETH</p>
+                      <p className="text-[11px] font-medium text-muted">ETH (latest)</p>
                       <p className="mt-1 font-mono text-sm text-foreground">
                         {arbBalances && !("error" in arbBalances) ? formatEth(arbBalances.eth) : "—"}
                       </p>
+                      {arbBalances && !("error" in arbBalances) ? (() => {
+                        const d = maybeDiff(arbBalances.ethPending, arbBalances.eth);
+                        if (d === null) return null;
+                        return (
+                          <p className="mt-1 text-[11px] text-muted">
+                            Pending: {formatEth(arbBalances.ethPending)} ETH
+                          </p>
+                        );
+                      })() : null}
                     </div>
                     <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
                       <p className="text-[11px] font-medium text-muted">USDC (native)</p>
@@ -629,6 +650,15 @@ export function WalletClient() {
                       <p className="text-[11px] font-medium text-muted">USDC.e</p>
                       <p className="mt-1 font-mono text-sm text-foreground">
                         {arbBalances && !("error" in arbBalances) ? formatUsdcUnits(arbBalances.usdceUnits) : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                      <p className="text-[11px] font-medium text-muted">WETH</p>
+                      <p className="mt-1 font-mono text-sm text-foreground">
+                        {arbBalances && !("error" in arbBalances) ? formatEth(arbBalances.weth) : "—"}
+                      </p>
+                      <p className="mt-1 text-[11px] text-muted">
+                        (from wrapping ETH)
                       </p>
                     </div>
                     <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">

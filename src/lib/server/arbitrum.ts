@@ -37,12 +37,23 @@ export async function getArbitrumBalances(address: string) {
   if (!isAddress(address)) throw new Error("Invalid address");
   const provider = getArbitrumProvider();
 
-  const ethWei = await provider.getBalance(address);
+  // Some RPCs can effectively return a "pending" balance by default.
+  // Make both explicit so the UI can explain discrepancies.
+  const [ethWeiLatest, ethWeiPending] = await Promise.all([
+    provider.getBalance(address, "latest"),
+    provider.getBalance(address, "pending"),
+  ]);
 
   const erc20 = new Interface([
     "function balanceOf(address) view returns (uint256)",
     "function decimals() view returns (uint8)",
   ]);
+
+  const wethRes = await provider.call({
+    to: WETH_ARB,
+    data: erc20.encodeFunctionData("balanceOf", [address]),
+  });
+  const wethWei = (erc20.decodeFunctionResult("balanceOf", wethRes) as unknown as [bigint])[0];
 
   const [usdcRes, usdceRes] = await Promise.all([
     provider.call({
@@ -59,8 +70,12 @@ export async function getArbitrumBalances(address: string) {
 
   return {
     chainId: ARB_CHAIN_ID,
-    ethWei: ethWei.toString(),
-    eth: formatEther(ethWei),
+    ethWei: ethWeiLatest.toString(),
+    eth: formatEther(ethWeiLatest),
+    ethWeiPending: ethWeiPending.toString(),
+    ethPending: formatEther(ethWeiPending),
+    wethWei: wethWei.toString(),
+    weth: formatEther(wethWei),
     usdcUnits: usdcWei.toString(),
     usdceUnits: usdceWei.toString(),
     // USDC is 6 decimals; keep raw units for UI formatting.
