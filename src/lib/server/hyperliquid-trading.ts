@@ -75,9 +75,35 @@ function toNum(v: unknown) {
   return Number.isFinite(n) ? n : null;
 }
 
+function countDecimalsFromString(s: string) {
+  const i = s.indexOf(".");
+  return i >= 0 ? s.length - i - 1 : 0;
+}
+
 function roundToDecimals(n: number, decimals: number) {
   const p = 10 ** Math.min(Math.max(decimals, 0), 18);
   return Math.floor(n * p) / p;
+}
+
+// Hyperliquid enforces tick size via:
+// - <=5 significant figures
+// - and <= (MAX_DECIMALS - szDecimals) decimals, where MAX_DECIMALS=6 for perps
+// See: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size
+function formatPerpPx(px: number, szDecimals: number) {
+  if (!Number.isFinite(px) || px <= 0) throw new Error("Invalid price");
+  const maxDecimals = Math.max(0, 6 - Math.floor(Math.max(szDecimals, 0)));
+
+  // Enforce 5 significant figures first.
+  const sig = Number(px.toPrecision(5));
+  if (!Number.isFinite(sig) || sig <= 0) throw new Error("Invalid price");
+
+  // Then cap decimals. toFixed adds trailing zeros; the SDK normalizes them away.
+  const decimalsInSig = countDecimalsFromString(String(sig));
+  const capped =
+    decimalsInSig > maxDecimals ? Number(sig.toFixed(maxDecimals)) : sig;
+
+  if (!Number.isFinite(capped) || capped <= 0) throw new Error("Invalid price");
+  return capped;
 }
 
 function extractFill(res: unknown): HyperliquidFill {
@@ -276,7 +302,8 @@ export async function placePerpIocOrder(opts: {
         : impactBid !== null && impactBid > 0
           ? impactBid
           : midPx;
-    const limitPx = isBuy ? refPx * (1 + slip) : refPx * (1 - slip);
+    const limitPxRaw = isBuy ? refPx * (1 + slip) : refPx * (1 - slip);
+    const limitPx = formatPerpPx(limitPxRaw, szDecimals);
     attempts.push({ slippageBps, midPx, refPx, limitPx, qty });
 
     try {
@@ -406,7 +433,8 @@ export async function closePerpIocOrder(opts: {
         : impactBid !== null && impactBid > 0
           ? impactBid
           : midPx;
-    const limitPx = isBuy ? refPx * (1 + slip) : refPx * (1 - slip);
+    const limitPxRaw = isBuy ? refPx * (1 + slip) : refPx * (1 - slip);
+    const limitPx = formatPerpPx(limitPxRaw, szDecimals);
     attempts.push({ slippageBps, midPx, refPx, limitPx, qty: roundedQty });
 
     try {
