@@ -793,6 +793,9 @@ export function WalletClient() {
                         onChange={(e) => setReserveEth(e.target.value)}
                         placeholder="0.002"
                       />
+                      <p className="text-[11px] text-muted">
+                        We keep this in ETH so the wallet can pay Arbitrum gas for swaps/deposits/cancels.
+                      </p>
                     </div>
                   </div>
 

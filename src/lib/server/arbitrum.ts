@@ -168,14 +168,30 @@ export async function swapEthToUsdcAndDepositToHyperliquid(opts: {
   }
   const signer = wallet.connect(provider);
 
-  const balance = await provider.getBalance(from);
+  // Use latest for spending checks to avoid relying on unconfirmed transfers.
+  // Still fetch pending so we can give a helpful error message when the user has
+  // inbound funds that aren't confirmed yet.
+  const [balanceLatest, balancePending] = await Promise.all([
+    provider.getBalance(from, "latest"),
+    provider.getBalance(from, "pending"),
+  ]);
   const reserveWei = parseEther(reserveEth);
-  if (balance <= reserveWei) throw new Error("Insufficient ETH (below reserve)");
+  if (balanceLatest <= reserveWei) {
+    const pendingHint =
+      balancePending > balanceLatest
+        ? ` (pending ${formatEther(balancePending)} ETH - wait for confirmation)`
+        : "";
+    throw new Error(
+      `Insufficient ETH (below reserve): latest ${formatEther(balanceLatest)} ETH${pendingHint}; reserve ${reserveEth} ETH`,
+    );
+  }
 
   const ethInWei = parseEther(opts.ethAmount);
   if (ethInWei <= BigInt(0)) throw new Error("ethAmount must be > 0");
-  if (ethInWei > balance - reserveWei) {
-    throw new Error("ethAmount exceeds available balance (after reserve)");
+  if (ethInWei > balanceLatest - reserveWei) {
+    throw new Error(
+      `ethAmount exceeds available balance (after reserve): latest ${formatEther(balanceLatest)} ETH, reserve ${reserveEth} ETH`,
+    );
   }
 
   // Quote two common pools and pick the better one.
