@@ -11,7 +11,7 @@ import { Select } from "@/components/ui/Select";
 import { bsmPrice, impliedVol, type OptionRight } from "@/lib/quant/bsm";
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
-const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeEth.";
+const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeUsdcOverride.";
 
 type SummaryRow = {
   symbol: string;
@@ -63,7 +63,13 @@ type WalletRow = {
 
 type WalletsResponse = { ts: number; wallets: WalletRow[] } | { error: string };
 
-type MidsResponse = { ts: number; mids: Record<string, string> };
+type HyperliquidStateResponse =
+  | {
+      ts: number;
+      user: string;
+      perps: { withdrawable?: string };
+    }
+  | { error: string };
 
 type OpenPosition = {
   id: number;
@@ -135,14 +141,6 @@ function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function formatEth(n: number) {
-  if (!Number.isFinite(n)) return "—";
-  if (n === 0) return "0";
-  if (n < 0.0001) return n.toFixed(6);
-  if (n < 1) return n.toFixed(4);
-  return n.toFixed(4);
-}
-
 export function MarketsDashboard() {
   const [rows, setRows] = useState<SummaryRow[]>([]);
   const [lastSync, setLastSync] = useState<number | null>(null);
@@ -160,10 +158,12 @@ export function MarketsDashboard() {
   const [optLoading, setOptLoading] = useState(false);
   const [optErr, setOptErr] = useState<string | null>(null);
   const [activeWallet, setActiveWallet] = useState<string | null>(null);
-  const [walletFreeEth, setWalletFreeEth] = useState<number | null>(null);
-  const [walletFreeEthText, setWalletFreeEthText] = useState("");
+  const [hlFreeUsdc, setHlFreeUsdc] = useState<number | null>(null);
+  const [walletFreeUsdcOverride, setWalletFreeUsdcOverride] =
+    useState<number | null>(null);
+  const [walletFreeUsdcOverrideText, setWalletFreeUsdcOverrideText] =
+    useState("");
   const [walletErr, setWalletErr] = useState<string | null>(null);
-  const [ethUsd, setEthUsd] = useState<number | null>(null);
   const [enterRec, setEnterRec] = useState<Recommendation | null>(null);
   const [enterPct, setEnterPct] = useState(10);
   const [enterErr, setEnterErr] = useState<string | null>(null);
@@ -198,16 +198,21 @@ export function MarketsDashboard() {
     }
   }
 
-  async function refreshEthPrice() {
+  async function refreshHyperliquidFreeFunds(address: string) {
     try {
-      const data = await fetchJson<MidsResponse>("/api/hyperliquid/mids?coins=ETH", {
-        cache: "no-store",
-      });
-      const raw = data.mids.ETH;
-      const n = raw ? Number(raw) : NaN;
-      setEthUsd(Number.isFinite(n) ? n : null);
+      const data = await fetchJsonNoThrow<HyperliquidStateResponse>(
+        `/api/hyperliquid/state/${address}`,
+        { cache: "no-store" },
+      );
+      if ("error" in data) {
+        setHlFreeUsdc(null);
+        return;
+      }
+      const raw = data.perps.withdrawable ?? null;
+      const n = raw === null ? NaN : Number(raw);
+      setHlFreeUsdc(Number.isFinite(n) ? n : null);
     } catch {
-      setEthUsd(null);
+      setHlFreeUsdc(null);
     }
   }
 
@@ -334,33 +339,36 @@ export function MarketsDashboard() {
   }, []);
 
   useEffect(() => {
-    void refreshEthPrice();
     void refreshWalletSelection();
   }, []);
 
   useEffect(() => {
     if (!activeWallet) {
-      setWalletFreeEth(null);
-      setWalletFreeEthText("");
+      setHlFreeUsdc(null);
+      setWalletFreeUsdcOverride(null);
+      setWalletFreeUsdcOverrideText("");
       return;
     }
 
     try {
       const raw = window.localStorage.getItem(`${FREE_FUNDS_LS_PREFIX}${activeWallet}`);
       const n = raw === null ? NaN : Number(raw);
-      setWalletFreeEthText(raw ?? "");
-      setWalletFreeEth(Number.isFinite(n) && n >= 0 ? n : null);
+      setWalletFreeUsdcOverrideText(raw ?? "");
+      setWalletFreeUsdcOverride(Number.isFinite(n) && n >= 0 ? n : null);
     } catch {
-      setWalletFreeEth(null);
-      setWalletFreeEthText("");
+      setWalletFreeUsdcOverride(null);
+      setWalletFreeUsdcOverrideText("");
     }
+
+    void refreshHyperliquidFreeFunds(activeWallet);
+    const id = window.setInterval(
+      () => void refreshHyperliquidFreeFunds(activeWallet),
+      15_000,
+    );
+    return () => window.clearInterval(id);
   }, [activeWallet]);
 
-  useEffect(() => {
-    void refreshEthPrice();
-    const id = window.setInterval(() => void refreshEthPrice(), 30_000);
-    return () => window.clearInterval(id);
-  }, []);
+  const freeUsdc = walletFreeUsdcOverride ?? hlFreeUsdc;
 
   const ranked = useMemo(() => {
     const copy = [...rows];
@@ -725,7 +733,6 @@ export function MarketsDashboard() {
                     setEnterPct(10);
                     setEnterErr(null);
                     setEnterRec(rec);
-                    void refreshEthPrice();
                     void refreshWalletSelection();
                   }}
                 >
@@ -733,7 +740,7 @@ export function MarketsDashboard() {
                     ? "Position open"
                     : "Enter position"}
                 </Button>
-                <p className="text-xs text-muted">defaults to 10% of free ETH</p>
+                <p className="text-xs text-muted">defaults to 10% of free USDC</p>
               </div>
             </Card>
           ))}
@@ -886,28 +893,22 @@ export function MarketsDashboard() {
           const row = rows.find((r) => r.symbol === enterRec.symbol) ?? null;
           const spot = row?.mid ?? null;
 
-          const freeEth = walletFreeEth;
           const pct = Math.min(Math.max(enterPct, 0), 100) / 100;
-          const allocEth = freeEth === null ? null : freeEth * pct;
-
-          const notionalUsd =
-            allocEth === null || ethUsd === null ? null : allocEth * ethUsd;
+          const allocUsd = freeUsdc === null ? null : freeUsdc * pct;
 
           const qty =
-            notionalUsd === null || spot === null || spot <= 0
+            allocUsd === null || spot === null || spot <= 0
               ? null
-              : notionalUsd / spot;
+              : allocUsd / spot;
 
           const canEnter =
             activeWallet !== null &&
-            freeEth !== null &&
-            freeEth > 0 &&
-            ethUsd !== null &&
-            ethUsd > 0 &&
+            freeUsdc !== null &&
+            freeUsdc > 0 &&
             spot !== null &&
             spot > 0 &&
-            notionalUsd !== null &&
-            notionalUsd > 0 &&
+            allocUsd !== null &&
+            allocUsd > 0 &&
             !hasOpenBySymbol.has(enterRec.symbol) &&
             enteringSymbol === null;
 
@@ -925,24 +926,31 @@ export function MarketsDashboard() {
                     ) : null}
                   </div>
                   <div className="space-y-1 text-right">
-                    <p className="text-xs font-medium text-muted">
-                      Free funds (ETH, manual)
+                    <p className="text-xs font-medium text-muted">Free funds (USDC)</p>
+                    <p className="font-mono text-sm text-foreground">
+                      {freeUsdc === null ? "—" : `$${formatCompact(freeUsdc)}`}
                     </p>
-                    <div className="flex justify-end">
-                      <div className="w-32">
+                    <p className="text-[11px] text-muted">
+                      Hyperliquid withdrawable:{" "}
+                      <span className="font-mono">
+                        {hlFreeUsdc === null ? "—" : `$${formatCompact(hlFreeUsdc)}`}
+                      </span>
+                    </p>
+                    <div className="mt-2 flex justify-end">
+                      <div className="w-40">
                         <Input
                           inputMode="decimal"
-                          placeholder="0.0"
-                          value={walletFreeEthText}
+                          placeholder="Override (optional)"
+                          value={walletFreeUsdcOverrideText}
                           disabled={!activeWallet}
                           onChange={(e) => {
                             const next = e.target.value;
-                            setWalletFreeEthText(next);
+                            setWalletFreeUsdcOverrideText(next);
 
                             const trimmed = next.trim();
                             const n = trimmed.length === 0 ? null : Number(trimmed);
                             const ok = n !== null && Number.isFinite(n) && n >= 0;
-                            setWalletFreeEth(ok ? n : null);
+                            setWalletFreeUsdcOverride(ok ? n : null);
 
                             if (!activeWallet) return;
                             try {
@@ -956,12 +964,6 @@ export function MarketsDashboard() {
                         />
                       </div>
                     </div>
-                    <p className="text-[11px] font-mono text-muted">
-                      ETH/USD {ethUsd === null ? "—" : `$${formatPx(ethUsd)}`}
-                    </p>
-                    <p className="text-[11px] text-muted">
-                      Stored in localStorage (until on-chain sizing lands).
-                    </p>
                   </div>
                 </div>
 
@@ -993,12 +995,10 @@ export function MarketsDashboard() {
                   <div className="text-right">
                     <p className="text-xs font-medium text-muted">Allocated</p>
                     <p className="mt-1 font-mono text-sm text-foreground">
-                      {allocEth === null ? "—" : `${formatEth(allocEth)} ETH`}
+                      {allocUsd === null ? "—" : `$${formatCompact(allocUsd)} USDC`}
                     </p>
                     <p className="mt-1 text-[11px] font-mono text-muted">
-                      {notionalUsd === null
-                        ? "≈ $— notional"
-                        : `≈ $${formatCompact(notionalUsd)} notional`}
+                      {allocUsd === null ? "≈ $— notional" : `≈ $${formatCompact(allocUsd)} notional`}
                     </p>
                   </div>
                 </div>
@@ -1054,38 +1054,36 @@ export function MarketsDashboard() {
                 </div>
               ) : null}
 
-              <div className="flex flex-wrap items-center justify-end gap-3">
-                <Button variant="ghost" onClick={() => setEnterRec(null)}>
-                  Cancel
-                </Button>
-                <Button
-                  disabled={!canEnter}
-                  onClick={() =>
-                    void enterPosition({
-                      symbol: enterRec.symbol,
-                      side: enterRec.side,
-                      notional: notionalUsd ?? 0,
-                      meta: {
-                        source: "recommendation",
-                        subtitle: enterRec.subtitle,
-                        wallet: activeWallet,
-                        alloc_pct: enterPct,
-                        alloc_eth: allocEth,
-                        eth_usd: ethUsd,
-                      },
-                    })
-                  }
-                >
-                  {enteringSymbol ? "Entering..." : "Confirm enter"}
-                </Button>
-              </div>
+                <div className="flex flex-wrap items-center justify-end gap-3">
+                  <Button variant="ghost" onClick={() => setEnterRec(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    disabled={!canEnter}
+                    onClick={() =>
+                      void enterPosition({
+                        symbol: enterRec.symbol,
+                        side: enterRec.side,
+                        notional: allocUsd ?? 0,
+                        meta: {
+                          source: "recommendation",
+                          subtitle: enterRec.subtitle,
+                          wallet: activeWallet,
+                          alloc_pct: enterPct,
+                          free_usdc: freeUsdc,
+                          alloc_usdc: allocUsd,
+                          hl_withdrawable_usdc: hlFreeUsdc,
+                        },
+                      })
+                    }
+                  >
+                    {enteringSymbol ? "Entering..." : "Confirm enter"}
+                  </Button>
+                </div>
 
               <p className="text-xs text-muted">
-                Notional is approximated as{" "}
-                <span className="font-mono text-foreground">
-                  allocatedEth × ETH/USD
-                </span>
-                . This is a local tracker (not live trading yet).
+                This sizes positions using Hyperliquid perps withdrawable (USDC).
+                This is still a local tracker (not live trading yet).
               </p>
             </div>
           );
