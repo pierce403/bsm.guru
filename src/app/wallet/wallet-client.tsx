@@ -69,22 +69,6 @@ type HyperliquidOpenOrdersResponse =
 
 type CancelOrdersResponse = { ts: number; wallet: string; result: unknown } | { error: string };
 
-type DepositFromEthResponse =
-  | {
-      ts: number;
-      result: {
-        chainId: number;
-        from: string;
-        ethInWei: string;
-        usdcOutUnits: string;
-        wrapTxHash: string;
-        approveTxHash: string;
-        swapTxHash: string;
-        depositTxHash: string;
-      };
-    }
-  | { error: string };
-
 type DepositUsdcResponse =
   | {
       ts: number;
@@ -95,6 +79,17 @@ type DepositUsdcResponse =
         usdcUnits: string;
         depositTxHash: string;
       };
+    }
+  | { error: string };
+
+type HyperliquidWithdrawResponse =
+  | {
+      ts: number;
+      wallet: string;
+      destination: string;
+      amount: number;
+      hypurrscanDestinationUrl: string;
+      result: unknown;
     }
   | { error: string };
 
@@ -135,7 +130,6 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 const WALLET_LS_KEY = "bsm.selectedWallet";
 const PASSWORD_LS_PREFIX = "bsm.walletPassword.";
-const AUTO_SWEEP_LS_PREFIX = "bsm.autoSweepEth.";
 
 function formatEth(eth: string) {
   const n = Number(eth);
@@ -196,19 +190,18 @@ export function WalletClient() {
   const [hlCancelRes, setHlCancelRes] = useState<CancelOrdersResponse | null>(null);
 
   const [walletPassword, setWalletPassword] = useState("");
-  const [ethToConvert, setEthToConvert] = useState("0.05");
   const [reserveEth, setReserveEth] = useState("0.002");
-  const [slippageBps, setSlippageBps] = useState("50");
-  const [depositing, setDepositing] = useState(false);
-  const [depositErr, setDepositErr] = useState<string | null>(null);
-  const [depositRes, setDepositRes] = useState<DepositFromEthResponse | null>(null);
 
   const [usdcToDeposit, setUsdcToDeposit] = useState("25");
   const [depositingUsdc, setDepositingUsdc] = useState(false);
   const [depositUsdcErr, setDepositUsdcErr] = useState<string | null>(null);
   const [depositUsdcRes, setDepositUsdcRes] = useState<DepositUsdcResponse | null>(null);
 
-  const [autoSweep, setAutoSweep] = useState(false);
+  const [hlWithdrawDestination, setHlWithdrawDestination] = useState("");
+  const [hlWithdrawAmount, setHlWithdrawAmount] = useState("");
+  const [hlWithdrawing, setHlWithdrawing] = useState(false);
+  const [hlWithdrawErr, setHlWithdrawErr] = useState<string | null>(null);
+  const [hlWithdrawRes, setHlWithdrawRes] = useState<HyperliquidWithdrawResponse | null>(null);
 
   const [unwrapWethAmount, setUnwrapWethAmount] = useState("max");
   const [unwrapping, setUnwrapping] = useState(false);
@@ -306,12 +299,11 @@ export function WalletClient() {
       setWalletPassword("");
     }
 
-    try {
-      const savedAuto = window.localStorage.getItem(`${AUTO_SWEEP_LS_PREFIX}${selected}`);
-      setAutoSweep(savedAuto === "true");
-    } catch {
-      setAutoSweep(false);
-    }
+    // Default Hyperliquid withdrawals to "back to this wallet" for convenience.
+    setHlWithdrawDestination(selected);
+    setHlWithdrawAmount("");
+    setHlWithdrawErr(null);
+    setHlWithdrawRes(null);
   }, [selected]);
 
   useEffect(() => {
@@ -324,15 +316,6 @@ export function WalletClient() {
       // ignore
     }
   }, [selected, walletPassword]);
-
-  useEffect(() => {
-    if (!selected) return;
-    try {
-      window.localStorage.setItem(`${AUTO_SWEEP_LS_PREFIX}${selected}`, autoSweep ? "true" : "false");
-    } catch {
-      // ignore
-    }
-  }, [selected, autoSweep]);
 
   useEffect(() => {
     if (!copied) return;
@@ -458,37 +441,6 @@ export function WalletClient() {
     [refreshHlOrders, selectedWallet, walletPassword],
   );
 
-  const depositFromEth = useCallback(
-    async (ethAmount: string) => {
-      const addr = selectedWallet?.address;
-      if (!addr) return;
-      setDepositing(true);
-      setDepositErr(null);
-      setDepositRes(null);
-      try {
-        const data = await fetchJson<DepositFromEthResponse>("/api/hyperliquid/deposit-from-eth", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            fromAddress: addr,
-            ethAmount,
-            password: walletPassword.trim() || undefined,
-            slippageBps: Number(slippageBps),
-            reserveEth,
-          }),
-        });
-        setDepositRes(data);
-        if ("error" in data) setDepositErr(data.error);
-        await refreshArbBalances();
-      } catch (e) {
-        setDepositErr(e instanceof Error ? e.message : "Deposit failed");
-      } finally {
-        setDepositing(false);
-      }
-    },
-    [refreshArbBalances, reserveEth, selectedWallet, slippageBps, walletPassword],
-  );
-
   const depositExistingUsdc = useCallback(
     async (token: "usdc" | "usdce") => {
       const addr = selectedWallet?.address;
@@ -525,6 +477,47 @@ export function WalletClient() {
     },
     [refreshArbBalances, selectedWallet, usdcToDeposit, walletPassword],
   );
+
+  const withdrawFromHyperliquid = useCallback(async () => {
+    const addr = selectedWallet?.address;
+    if (!addr) return;
+    setHlWithdrawing(true);
+    setHlWithdrawErr(null);
+    setHlWithdrawRes(null);
+    try {
+      const destination = hlWithdrawDestination.trim();
+      if (!destination) {
+        setHlWithdrawErr("Enter a destination address");
+        return;
+      }
+
+      const amountStr = hlWithdrawAmount.trim();
+      const amount = Number(amountStr);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setHlWithdrawErr("Enter a valid USDC amount");
+        return;
+      }
+
+      const data = await fetchJson<HyperliquidWithdrawResponse>("/api/hyperliquid/withdraw-usdc", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          wallet: addr,
+          destination,
+          amount: amountStr,
+          password: walletPassword.trim() || undefined,
+        }),
+      });
+      setHlWithdrawRes(data);
+      if ("error" in data) setHlWithdrawErr(data.error);
+      await refreshHlState();
+      await refreshArbBalances();
+    } catch (e) {
+      setHlWithdrawErr(e instanceof Error ? e.message : "Withdraw failed");
+    } finally {
+      setHlWithdrawing(false);
+    }
+  }, [hlWithdrawAmount, hlWithdrawDestination, refreshArbBalances, refreshHlState, selectedWallet, walletPassword]);
 
   const unwrapWeth = useCallback(
     async (amount: string) => {
@@ -611,27 +604,6 @@ export function WalletClient() {
       setWithdrawing(false);
     }
   }, [refreshArbBalances, reserveEth, selectedWallet, walletPassword, withdrawAmount, withdrawAsset, withdrawTo]);
-
-  // Optional automation: if ETH arrives, swap the excess above reserve and deposit it.
-  useEffect(() => {
-    if (!autoSweep) return;
-    if (!selectedWallet) return;
-    if (!arbBalances || "error" in arbBalances) return;
-
-    const eth = Number(arbBalances.eth);
-    const reserve = Number(reserveEth);
-    if (!Number.isFinite(eth) || !Number.isFinite(reserve)) return;
-
-    const excess = eth - reserve;
-    if (excess <= 0.001) return; // avoid dust sweeps
-
-    // Avoid overlapping runs.
-    if (depositing) return;
-
-    // Sweep at most 0.25 ETH per pass (safety).
-    const amt = Math.min(excess, 0.25);
-    void depositFromEth(String(amt));
-  }, [arbBalances, autoSweep, depositFromEth, depositing, reserveEth, selectedWallet]);
 
   return (
     <main className="space-y-6">
@@ -894,146 +866,6 @@ export function WalletClient() {
                 )}
               </div>
 
-              <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
-                <p className="text-xs font-medium text-muted">ETH → USDC → Hyperliquid</p>
-                <p className="mt-2 text-sm leading-6 text-muted">
-                  If you accidentally (or intentionally) send ETH to this wallet on Arbitrum, this will
-                  swap some ETH for native USDC and then deposit it into Hyperliquid by transferring USDC
-                  to the Hyperliquid Bridge2 contract.
-                </p>
-
-                <div className="mt-4 grid gap-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-muted">ETH to convert</label>
-                      <Input
-                        inputMode="decimal"
-                        value={ethToConvert}
-                        onChange={(e) => setEthToConvert(e.target.value)}
-                        placeholder="0.05"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-muted">Reserve ETH (gas)</label>
-                      <Input
-                        inputMode="decimal"
-                        value={reserveEth}
-                        onChange={(e) => setReserveEth(e.target.value)}
-                        placeholder="0.002"
-                      />
-                      <p className="text-[11px] text-muted">
-                        We keep this in ETH so the wallet can pay Arbitrum gas for swaps/deposits/cancels.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-muted">Slippage (bps)</label>
-                      <Input
-                        inputMode="numeric"
-                        value={slippageBps}
-                        onChange={(e) => setSlippageBps(e.target.value)}
-                        placeholder="50"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-muted">Wallet password (optional)</label>
-                      <Input
-                        type="password"
-                        value={walletPassword}
-                        onChange={(e) => setWalletPassword(e.target.value)}
-                        placeholder="(cached locally)"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                    <label className="flex items-center gap-2 text-xs text-muted">
-                      <input
-                        type="checkbox"
-                        checked={autoSweep}
-                        onChange={(e) => setAutoSweep(e.target.checked)}
-                      />
-                      Auto-sweep ETH deposits
-                    </label>
-                    <Button
-                      variant="soft"
-                      disabled={!selectedWallet || depositing || ethToConvert.trim().length === 0}
-                      onClick={() => void depositFromEth(ethToConvert)}
-                    >
-                      {depositing ? "Depositing…" : "Convert & deposit"}
-                    </Button>
-                  </div>
-
-                  {depositErr ? (
-                    <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
-                      {depositErr}
-                    </div>
-                  ) : null}
-
-                  {depositRes && !("error" in depositRes) ? (
-                    <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
-                      <p>
-                        Swapped ETH → USDC and deposited{" "}
-                        <span className="font-mono text-foreground">
-                          {formatUsdcUnits(depositRes.result.usdcOutUnits)} USDC
-                        </span>
-                        .
-                      </p>
-                      <p className="mt-2 text-xs">
-                        Wrap tx:{" "}
-                        <a
-                          className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                          href={`https://arbiscan.io/tx/${depositRes.result.wrapTxHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {depositRes.result.wrapTxHash.slice(0, 12)}…
-                        </a>
-                      </p>
-                      <p className="mt-1 text-xs">
-                        Approve tx:{" "}
-                        <a
-                          className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                          href={`https://arbiscan.io/tx/${depositRes.result.approveTxHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {depositRes.result.approveTxHash.slice(0, 12)}…
-                        </a>
-                      </p>
-                      <p className="mt-1 text-xs">
-                        Swap tx:{" "}
-                        <a
-                          className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                          href={`https://arbiscan.io/tx/${depositRes.result.swapTxHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {depositRes.result.swapTxHash.slice(0, 12)}…
-                        </a>
-                      </p>
-                      <p className="mt-1 text-xs">
-                        Deposit tx:{" "}
-                        <a
-                          className="font-mono text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                          href={`https://arbiscan.io/tx/${depositRes.result.depositTxHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {depositRes.result.depositTxHash.slice(0, 12)}…
-                        </a>
-                      </p>
-                    </div>
-                  ) : null}
-
-                  <p className="text-xs text-muted">
-                    Notes: keep some ETH for gas; Hyperliquid deposits usually require at least 5 USDC.
-                    This uses Uniswap v3 routing (WETH/USDC) under the hood.
-                  </p>
-                </div>
-              </div>
             </div>
 
             <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
@@ -1098,6 +930,161 @@ export function WalletClient() {
                 deposited and don’t see “Spot USDC”, you may need to transfer from perps ↔ spot inside
                 Hyperliquid.
               </p>
+
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                  <p className="text-xs font-medium text-muted">Deposit (Arbitrum → Hyperliquid)</p>
+                  <p className="mt-1 text-[11px] leading-5 text-muted">
+                    Send USDC to this wallet on Arbitrum, then deposit it into Hyperliquid here.
+                  </p>
+
+                  <div className="mt-3 grid gap-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-medium text-muted">Amount (USDC)</label>
+                        <Input
+                          inputMode="decimal"
+                          value={usdcToDeposit}
+                          onChange={(e) => setUsdcToDeposit(e.target.value)}
+                          placeholder="25"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-medium text-muted">Wallet password (optional)</label>
+                        <Input
+                          type="password"
+                          value={walletPassword}
+                          onChange={(e) => setWalletPassword(e.target.value)}
+                          placeholder="(cached locally)"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        variant="ghost"
+                        disabled={!selectedWallet || depositingUsdc}
+                        onClick={() => void depositExistingUsdc("usdc")}
+                      >
+                        {depositingUsdc ? "Depositing…" : "Deposit USDC"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        disabled={!selectedWallet || depositingUsdc}
+                        onClick={() => void depositExistingUsdc("usdce")}
+                      >
+                        {depositingUsdc ? "Depositing…" : "Deposit USDC.e"}
+                      </Button>
+                    </div>
+
+                    {depositUsdcErr ? (
+                      <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                        {depositUsdcErr}
+                      </div>
+                    ) : null}
+
+                    {depositUsdcRes && !("error" in depositUsdcRes) ? (
+                      <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+                        <p>
+                          Submitted deposit of{" "}
+                          <span className="font-mono text-foreground">
+                            {formatUsdcUnits(depositUsdcRes.result.usdcUnits)}{" "}
+                            {depositUsdcRes.result.token.toUpperCase()}
+                          </span>
+                          .
+                        </p>
+                        <p className="mt-2 text-xs">
+                          Tx:{" "}
+                          <a
+                            className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                            href={`https://arbiscan.io/tx/${depositUsdcRes.result.depositTxHash}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {depositUsdcRes.result.depositTxHash.slice(0, 12)}…
+                          </a>
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                  <p className="text-xs font-medium text-muted">Withdraw (Hyperliquid → Arbitrum)</p>
+                  <p className="mt-1 text-[11px] leading-5 text-muted">
+                    Initiates a USDC withdrawal from Hyperliquid to an Arbitrum address. Hyperliquid
+                    charges a bridge fee (often ~$1) and it may take a few minutes to arrive.
+                  </p>
+
+                  <div className="mt-3 grid gap-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-medium text-muted">Destination</label>
+                        <Input
+                          value={hlWithdrawDestination}
+                          onChange={(e) => setHlWithdrawDestination(e.target.value)}
+                          placeholder={selectedWallet?.address ?? "0x…"}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-medium text-muted">Amount (USDC)</label>
+                        <Input
+                          inputMode="decimal"
+                          value={hlWithdrawAmount}
+                          onChange={(e) => setHlWithdrawAmount(e.target.value)}
+                          placeholder="25"
+                        />
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          <Button
+                            variant="ghost"
+                            disabled={!hlState || "error" in hlState}
+                            onClick={() => {
+                              if (!hlState || "error" in hlState) return;
+                              const w = Number(hlState.perps.withdrawable ?? "");
+                              if (Number.isFinite(w) && w > 0) setHlWithdrawAmount(String(w));
+                            }}
+                          >
+                            Use withdrawable
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        variant="soft"
+                        disabled={!selectedWallet || hlWithdrawing || hlWithdrawAmount.trim().length === 0}
+                        onClick={() => void withdrawFromHyperliquid()}
+                      >
+                        {hlWithdrawing ? "Withdrawing…" : "Withdraw USDC"}
+                      </Button>
+                    </div>
+
+                    {hlWithdrawErr ? (
+                      <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                        {hlWithdrawErr}
+                      </div>
+                    ) : null}
+
+                    {hlWithdrawRes && !("error" in hlWithdrawRes) ? (
+                      <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+                        <p>Withdrawal initiated.</p>
+                        <p className="mt-2 text-xs">
+                          Destination:{" "}
+                          <a
+                            className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                            href={hlWithdrawRes.hypurrscanDestinationUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {shortAddr(hlWithdrawRes.destination)}
+                          </a>
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
@@ -1207,89 +1194,11 @@ export function WalletClient() {
             </div>
 
             <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
-              <p className="text-xs font-medium text-muted">Deposit existing USDC</p>
-              <p className="mt-2 text-sm leading-6 text-muted">
-                If you already sent USDC to this wallet, you still need to deposit it into Hyperliquid.
-                This does that deposit for you by transferring USDC to the Hyperliquid Bridge2 contract.
-              </p>
-
-              <div className="mt-4 grid gap-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-muted">Amount (USDC)</label>
-                    <Input
-                      inputMode="decimal"
-                      value={usdcToDeposit}
-                      onChange={(e) => setUsdcToDeposit(e.target.value)}
-                      placeholder="25"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-medium text-muted">Wallet password (optional)</label>
-                    <Input
-                      type="password"
-                      value={walletPassword}
-                      onChange={(e) => setWalletPassword(e.target.value)}
-                      placeholder="(cached locally)"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-end gap-3">
-                  <Button
-                    variant="ghost"
-                    disabled={!selectedWallet || depositingUsdc}
-                    onClick={() => void depositExistingUsdc("usdc")}
-                  >
-                    {depositingUsdc ? "Depositing…" : "Deposit USDC"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={!selectedWallet || depositingUsdc}
-                    onClick={() => void depositExistingUsdc("usdce")}
-                  >
-                    {depositingUsdc ? "Depositing…" : "Deposit USDC.e"}
-                  </Button>
-                </div>
-
-                {depositUsdcErr ? (
-                  <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
-                    {depositUsdcErr}
-                  </div>
-                ) : null}
-
-                {depositUsdcRes && !("error" in depositUsdcRes) ? (
-                  <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
-                    <p>
-                      Submitted deposit of{" "}
-                      <span className="font-mono text-foreground">
-                        {formatUsdcUnits(depositUsdcRes.result.usdcUnits)} {depositUsdcRes.result.token.toUpperCase()}
-                      </span>
-                      .
-                    </p>
-                    <p className="mt-2 text-xs">
-                      Tx:{" "}
-                      <a
-                        className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
-                        href={`https://arbiscan.io/tx/${depositUsdcRes.result.depositTxHash}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {depositUsdcRes.result.depositTxHash.slice(0, 12)}…
-                      </a>
-                    </p>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
               <p className="text-xs font-medium text-muted">Withdraw / unwrap</p>
               <p className="mt-2 text-sm leading-6 text-muted">
-                If you see WETH in this wallet, it usually means an earlier{" "}
-                <span className="font-medium text-foreground">ETH → USDC</span> attempt wrapped ETH first
-                (WETH is required for Uniswap), but the swap didn’t complete. You can unwrap WETH back
-                to ETH, or withdraw tokens to another address and swap there.
+                If you see WETH in this wallet, it means ETH was wrapped at some point (WETH is just
+                ETH in ERC-20 form). You can unwrap WETH back to ETH, or withdraw assets to another
+                address and swap there.
               </p>
 
               <div className="mt-4 grid gap-3">
@@ -1333,6 +1242,21 @@ export function WalletClient() {
                     </p>
                   </div>
                   <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">Reserve ETH (gas)</label>
+                    <Input
+                      inputMode="decimal"
+                      value={reserveEth}
+                      onChange={(e) => setReserveEth(e.target.value)}
+                      placeholder="0.002"
+                    />
+                    <p className="text-[11px] text-muted">
+                      Keep a little ETH for Arbitrum gas.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
                     <label className="text-[11px] font-medium text-muted">Wallet password (optional)</label>
                     <Input
                       type="password"
@@ -1341,6 +1265,7 @@ export function WalletClient() {
                       placeholder="(cached locally)"
                     />
                   </div>
+                  <div className="space-y-1" />
                 </div>
 
                 <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
