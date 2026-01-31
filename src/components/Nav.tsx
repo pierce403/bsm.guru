@@ -28,6 +28,9 @@ export function Nav() {
           <Link href="/screener" className={cn(linkBase)}>
             Screener
           </Link>
+          <Link href="/simulator" className={cn(linkBase)}>
+            Simulator
+          </Link>
           <Link href="/pricing" className={cn(linkBase)}>
             Pricing
           </Link>
