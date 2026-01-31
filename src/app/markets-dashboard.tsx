@@ -785,7 +785,6 @@ export function MarketsDashboard() {
                     ? "Position open"
                     : "Enter position"}
                 </Button>
-                <p className="text-xs text-muted">defaults to 10% of free USDC</p>
               </div>
             </Card>
           ))}
