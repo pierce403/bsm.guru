@@ -61,6 +61,8 @@ export async function POST(req: Request) {
       notionalUsd: notional,
     });
 
+    const mode = (process.env.BSM_TRADING_MODE ?? "").toLowerCase() === "mock" ? "mock" : "real";
+
     const pos = openPosition({
       symbol,
       side: side as PositionSide,
@@ -74,6 +76,7 @@ export async function POST(req: Request) {
           : {}),
         wallet: wallet.toLowerCase(),
         hl: {
+          mode,
           oid: trade.fill.oid,
           avgPx: trade.fill.avgPx,
           totalSz: trade.fill.totalSz,

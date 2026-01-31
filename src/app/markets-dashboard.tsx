@@ -121,6 +121,7 @@ type CloseResponse =
         proof: TradeProof;
       };
     }
+  | { ts: number; position: OpenPosition; trade: null }
   | { error: string };
 
 type Recommendation = {
@@ -155,7 +156,28 @@ function formatPercent(n: number) {
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
-  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+  if (!res.ok) {
+    const msg = await (async () => {
+      try {
+        const j = (await res.json()) as unknown;
+        if (j && typeof j === "object" && "error" in j) {
+          const err = (j as Record<string, unknown>).error;
+          if (typeof err === "string") return err;
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        const t = await res.text();
+        if (t.trim()) return t.trim();
+      } catch {
+        // ignore
+      }
+      return res.statusText || "Request failed";
+    })();
+
+    throw new Error(`Request failed: ${res.status}${msg ? ` - ${msg}` : ""}`);
+  }
   return (await res.json()) as T;
 }
 
@@ -330,7 +352,7 @@ export function MarketsDashboard() {
         body: "{}",
       });
       if ("error" in res) throw new Error(res.error);
-      setLastTradeProof(res.trade.proof);
+      if (res.trade) setLastTradeProof(res.trade.proof);
     } catch (e) {
       setPositionsErr(e instanceof Error ? e.message : "Failed to exit position");
     } finally {
@@ -363,7 +385,7 @@ export function MarketsDashboard() {
       void refresh();
       void refreshPositions();
     }, 10_000);
-    const syncId = window.setInterval(() => void syncNow(), 60_000);
+    const syncId = window.setInterval(() => void syncNow(), 600_000);
 
     return () => {
       alive = false;
@@ -1075,7 +1097,7 @@ export function MarketsDashboard() {
                 <div className="flex items-end justify-between gap-6">
                   <div>
                     <p className="text-xs font-medium text-muted">
-                      Allocation (% of free ETH)
+                      Allocation (% of free USDC)
                     </p>
                     <p className="mt-1 font-mono text-3xl text-foreground">
                       {enterPct}%

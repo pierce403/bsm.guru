@@ -31,6 +31,37 @@ ensure_logs() {
   touch "$dir/analysis.log" "$dir/trade.log" "$dir/wallet.log" "$dir/error.log"
 }
 
+list_next_dev_pids() {
+  # Only match Next dev instances that belong to this repo.
+  pgrep -af "next dev" 2>/dev/null \
+    | rg -F "$ROOT" \
+    | awk '{print $1}' \
+    | rg "^[0-9]+$" || true
+}
+
+stop_next_dev() {
+  local pids
+  pids="$(list_next_dev_pids || true)"
+  if [[ -z "${pids:-}" ]]; then
+    return 0
+  fi
+
+  echo "Stopping existing next dev instance(s): ${pids//$'\n'/ }"
+  # Try graceful termination first.
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    kill "$pid" >/dev/null 2>&1 || true
+  done <<<"$pids"
+
+  # Give it a moment to release the dev lock.
+  sleep 1
+
+  # Clean up any stale dev lock if nothing is running anymore.
+  if [[ -f "$ROOT/.next/dev/lock" ]] && [[ -z "$(list_next_dev_pids || true)" ]]; then
+    rm -f "$ROOT/.next/dev/lock" >/dev/null 2>&1 || true
+  fi
+}
+
 start_sync_loop() {
   local url="$1"
   local interval_s="$2"
@@ -60,10 +91,14 @@ case "$cmd" in
     dev_port="${PORT:-3000}"
     host="${BSM_DEV_HOST:-http://${dev_hostname}:${dev_port}}"
     sync_url="${BSM_SYNC_URL:-$host/api/sync/hyperliquid}"
-    sync_interval="${BSM_SYNC_INTERVAL_SECONDS:-60}"
+    sync_interval="${BSM_SYNC_INTERVAL_SECONDS:-600}"
 
     sync_pid=""
+    dev_pid=""
     cleanup() {
+      if [[ -n "${dev_pid:-}" ]]; then
+        kill "$dev_pid" >/dev/null 2>&1 || true
+      fi
       if [[ -n "${sync_pid:-}" ]]; then
         kill "$sync_pid" >/dev/null 2>&1 || true
       fi
@@ -75,9 +110,15 @@ case "$cmd" in
       echo "Background DB sync: POST $sync_url every ${sync_interval}s (pid $sync_pid)"
     fi
 
+    # If a prior instance is running (or left a lock), stop it so re-running
+    # `./run.sh` "just works".
+    stop_next_dev
+
     echo "Starting dev server at $host ..."
     # NOTE: Next's CLI treats a literal "--" here as a positional project dir.
-    "${PNPM[@]}" dev --hostname "$dev_hostname"
+    "${PNPM[@]}" dev --hostname "$dev_hostname" &
+    dev_pid="$!"
+    wait "$dev_pid"
     ;;
   "--no-sync" )
     install_deps
@@ -85,10 +126,15 @@ case "$cmd" in
     dev_hostname="${BSM_HOSTNAME:-127.0.0.1}"
     dev_port="${PORT:-3000}"
     echo "Starting dev server at http://${dev_hostname}:${dev_port} ..."
+    stop_next_dev
     "${PNPM[@]}" dev --hostname "$dev_hostname"
     ;;
   "--install-only" )
     install_deps
+    echo "Done."
+    ;;
+  "--stop" )
+    stop_next_dev
     echo "Done."
     ;;
   "--check" )
@@ -104,6 +150,7 @@ Usage:
   ./run.sh              # install deps (if needed), background-sync, and start dev server
   ./run.sh --no-sync
   ./run.sh --install-only
+  ./run.sh --stop       # stop any running next dev instance for this repo
   ./run.sh --check      # lint + test + build
 
 Env:
@@ -112,7 +159,7 @@ Env:
   BSM_HOSTNAME                # default: 127.0.0.1 (Next dev hostname)
   BSM_DEV_HOST                # default: http://$BSM_HOSTNAME:${PORT:-3000}
   BSM_SYNC_URL                # default: $BSM_DEV_HOST/api/sync/hyperliquid
-  BSM_SYNC_INTERVAL_SECONDS   # default: 60
+  BSM_SYNC_INTERVAL_SECONDS   # default: 600
 EOF
     ;;
   * )
