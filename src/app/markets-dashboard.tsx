@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PayoffProbabilityChart } from "@/components/charts/PayoffProbabilityChart";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +11,11 @@ import { Modal } from "@/components/ui/Modal";
 const WALLET_LS_KEY = "bsm.selectedWallet";
 const FREE_FUNDS_LS_PREFIX = "bsm.walletFreeUsdcOverride.";
 const PASSWORD_LS_PREFIX = "bsm.walletPassword.";
+const AUTO_ENTER_LS_KEY = "bsm.autoEnter";
+const AUTO_EXIT_LS_KEY = "bsm.autoExit";
+const AUTO_ENTER_MIN_SIGMA_LS_KEY = "bsm.autoEnterMinAbsSigma";
+const AUTO_EXIT_MIN_SIGMA_LS_KEY = "bsm.autoExitMinAbsSigma";
+const AUTO_ENTER_PCT_LS_KEY = "bsm.autoEnterAllocPct";
 
 type SummaryRow = {
   symbol: string;
@@ -192,6 +197,56 @@ export function MarketsDashboard() {
   const [enterPct, setEnterPct] = useState(10);
   const [enterErr, setEnterErr] = useState<string | null>(null);
   const [lastTradeProof, setLastTradeProof] = useState<TradeProof | null>(null);
+  const [autoEnter, setAutoEnter] = useState(false);
+  const [autoExit, setAutoExit] = useState(false);
+  const [autoEnterMinAbsSigma, setAutoEnterMinAbsSigma] = useState(1.75);
+  const [autoExitMinAbsSigma, setAutoExitMinAbsSigma] = useState(0.5);
+  const [autoEnterPct, setAutoEnterPct] = useState(10);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const autoRunning = useRef(false);
+  const lastAutoRunAt = useRef(0);
+  const runAutoCycleRef = useRef<(trigger: "refresh" | "sync") => Promise<void>>(async () => {});
+  const syncNowRef = useRef<() => Promise<void>>(async () => {});
+  const latest = useRef<{
+    rows: SummaryRow[];
+    positions: OpenPosition[];
+    wallet: string | null;
+    freeUsdc: number | null;
+    walletPassword: string;
+  }>({ rows: [], positions: [], wallet: null, freeUsdc: null, walletPassword: "" });
+
+  // Load persisted auto settings.
+  useEffect(() => {
+    try {
+      const ae = window.localStorage.getItem(AUTO_ENTER_LS_KEY);
+      const ax = window.localStorage.getItem(AUTO_EXIT_LS_KEY);
+      setAutoEnter(ae === "true");
+      setAutoExit(ax === "true");
+
+      const eMin = Number(window.localStorage.getItem(AUTO_ENTER_MIN_SIGMA_LS_KEY));
+      if (Number.isFinite(eMin) && eMin > 0) setAutoEnterMinAbsSigma(eMin);
+
+      const xMin = Number(window.localStorage.getItem(AUTO_EXIT_MIN_SIGMA_LS_KEY));
+      if (Number.isFinite(xMin) && xMin > 0) setAutoExitMinAbsSigma(xMin);
+
+      const pct = Number(window.localStorage.getItem(AUTO_ENTER_PCT_LS_KEY));
+      if (Number.isFinite(pct) && pct > 0 && pct <= 100) setAutoEnterPct(pct);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(AUTO_ENTER_LS_KEY, String(autoEnter));
+      window.localStorage.setItem(AUTO_EXIT_LS_KEY, String(autoExit));
+      window.localStorage.setItem(AUTO_ENTER_MIN_SIGMA_LS_KEY, String(autoEnterMinAbsSigma));
+      window.localStorage.setItem(AUTO_EXIT_MIN_SIGMA_LS_KEY, String(autoExitMinAbsSigma));
+      window.localStorage.setItem(AUTO_ENTER_PCT_LS_KEY, String(autoEnterPct));
+    } catch {
+      // ignore
+    }
+  }, [autoEnter, autoExit, autoEnterMinAbsSigma, autoExitMinAbsSigma, autoEnterPct]);
 
   async function refresh() {
     try {
@@ -199,6 +254,7 @@ export function MarketsDashboard() {
         cache: "no-store",
       });
       setRows(data.rows);
+      latest.current.rows = data.rows;
       setLastSync(data.lastSync?.ts ?? null);
       setError(null);
     } catch (e) {
@@ -214,12 +270,14 @@ export function MarketsDashboard() {
         cache: "no-store",
       });
       setPositions(data.positions);
+      latest.current.positions = data.positions;
       setPositionsErr(null);
     } catch (e) {
       setPositionsErr(
         e instanceof Error ? e.message : "Failed to load positions",
       );
       setPositions([]);
+      latest.current.positions = [];
     }
   }
 
@@ -264,17 +322,21 @@ export function MarketsDashboard() {
 
       setWalletErr(null);
       setActiveWallet(selected);
+      latest.current.wallet = selected;
       // Pull the saved password (optional). This enables trading for wallets
       // that were created with a password, without re-prompting here.
       if (selected) {
         try {
           const savedPw = window.localStorage.getItem(`${PASSWORD_LS_PREFIX}${selected}`);
           setWalletPassword(savedPw ?? "");
+          latest.current.walletPassword = savedPw ?? "";
         } catch {
           setWalletPassword("");
+          latest.current.walletPassword = "";
         }
       } else {
         setWalletPassword("");
+        latest.current.walletPassword = "";
       }
 
       if (selected) {
@@ -289,6 +351,7 @@ export function MarketsDashboard() {
     } catch (e) {
       setWalletErr(e instanceof Error ? e.message : "Failed to load wallets");
       setActiveWallet(null);
+      latest.current.wallet = null;
       return null;
     }
   }
@@ -362,28 +425,134 @@ export function MarketsDashboard() {
       setSyncing(false);
       await refresh();
       await refreshPositions();
+      await runAutoCycle("sync");
     }
   }
+  syncNowRef.current = syncNow;
+
+  function scoreAutoCandidates(rows: SummaryRow[]) {
+    return rows
+      .filter((r) => r.sigma_move_24h !== null && r.realized_vol !== null)
+      .map((r) => {
+        const z = r.sigma_move_24h ?? 0;
+        const abs = Math.abs(z);
+        const liq = Math.log10((r.day_ntl_vlm ?? 1) + 1);
+        const score = abs * (1 + liq);
+        const side: PositionSide = z >= 0 ? "short" : "long";
+        return { symbol: r.symbol, side, score, absZ: abs, z };
+      })
+      .filter((c) => c.absZ >= autoEnterMinAbsSigma)
+      .sort((a, b) => b.score - a.score);
+  }
+
+  async function runAutoCycle(trigger: "refresh" | "sync") {
+    if (!autoEnter && !autoExit) return;
+    if (autoRunning.current) return;
+    if (enteringSymbol !== null || exitingId !== null) return;
+
+    const now = Date.now();
+    // Avoid rapid-fire repeats if refresh is frequent.
+    if (now - lastAutoRunAt.current < 15_000) return;
+
+    autoRunning.current = true;
+    setAutoBusy(true);
+    lastAutoRunAt.current = now;
+
+    try {
+      const { rows, positions, wallet, freeUsdc, walletPassword } = latest.current;
+      const MAX_OPEN = 5;
+
+      const openBySymbol = new Set(positions.map((p) => p.symbol));
+
+      // Auto-exit first.
+      if (autoExit && positions.length) {
+        const exitCandidates = positions
+          .filter((p) => {
+            if (p.health_action === "exit_now" || p.health_action === "exit") return true;
+            const abs = Math.abs(p.sigma_move_24h ?? 0);
+            return abs > 0 && abs < autoExitMinAbsSigma;
+          })
+          .sort((a, b) => {
+            const ar = a.health_action === "exit_now" ? 2 : a.health_action === "exit" ? 1 : 0;
+            const br = b.health_action === "exit_now" ? 2 : b.health_action === "exit" ? 1 : 0;
+            if (br !== ar) return br - ar;
+            const as = a.health_score ?? 0;
+            const bs = b.health_score ?? 0;
+            return as - bs;
+          });
+
+        if (exitCandidates.length) {
+          await exitPosition(exitCandidates[0]!.id);
+          return;
+        }
+      }
+
+      // Auto-enter (at most one per cycle).
+      if (!autoEnter) return;
+      if (!wallet) return;
+      if (positions.length >= MAX_OPEN) return;
+
+      if (freeUsdc === null || !Number.isFinite(freeUsdc) || freeUsdc <= 0) return;
+      const pct = Math.min(Math.max(autoEnterPct, 0), 100) / 100;
+      const allocUsd = freeUsdc * pct;
+      if (!Number.isFinite(allocUsd) || allocUsd <= 0) return;
+
+      const candidates = scoreAutoCandidates(rows);
+      const next = candidates.find((c) => !openBySymbol.has(c.symbol)) ?? null;
+      if (!next) return;
+
+      await enterPosition({
+        symbol: next.symbol,
+        side: next.side,
+        notional: allocUsd,
+        wallet,
+        password: walletPassword || undefined,
+        meta: {
+          source: "auto",
+          trigger,
+          auto_enter_alloc_pct: autoEnterPct,
+          auto_enter_min_abs_sigma: autoEnterMinAbsSigma,
+          auto_exit_min_abs_sigma: autoExitMinAbsSigma,
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Auto trading failed";
+      setPositionsErr(msg);
+    } finally {
+      autoRunning.current = false;
+      setAutoBusy(false);
+    }
+  }
+  runAutoCycleRef.current = runAutoCycle;
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([refresh(), refreshPositions()]).finally(() => {
-      if (!alive) return;
-      setLoading(false);
-    });
+    const refreshing = { current: false };
+
+    const refreshAll = async (trigger: "refresh" | "boot") => {
+      if (refreshing.current) return;
+      refreshing.current = true;
+      try {
+        await Promise.all([refresh(), refreshPositions()]);
+        if (trigger === "refresh") await runAutoCycleRef.current("refresh");
+      } finally {
+        refreshing.current = false;
+        if (alive) setLoading(false);
+      }
+    };
+
+    void refreshAll("boot");
 
     const refreshId = window.setInterval(() => {
-      void refresh();
-      void refreshPositions();
+      void refreshAll("refresh");
     }, 10_000);
-    const syncId = window.setInterval(() => void syncNow(), 600_000);
+    const syncId = window.setInterval(() => void syncNowRef.current(), 600_000);
 
     return () => {
       alive = false;
       window.clearInterval(refreshId);
       window.clearInterval(syncId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -417,6 +586,12 @@ export function MarketsDashboard() {
   }, [activeWallet]);
 
   const freeUsdc = walletFreeUsdcOverride ?? hlFreeUsdc;
+
+  useEffect(() => {
+    latest.current.freeUsdc = freeUsdc;
+    latest.current.walletPassword = walletPassword;
+    latest.current.wallet = activeWallet;
+  }, [freeUsdc, walletPassword, activeWallet]);
 
   const ranked = useMemo(() => {
     const copy = [...rows];
@@ -511,21 +686,108 @@ export function MarketsDashboard() {
   return (
     <main className="space-y-8">
       <Card className="p-0">
-        <div className="flex items-center justify-between px-6 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
           <div>
             <p className="text-sm font-medium text-foreground">Open positions</p>
             <p className="text-xs text-muted">
               Local position tracker (mark-to-market off Hyperliquid mids).
             </p>
           </div>
-          <p className="text-xs text-muted">
-            {positions.length ? `${positions.length} open` : "none"}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="soft"
+              className={[
+                "px-4 py-2",
+                autoEnter
+                  ? "bg-success text-background ring-0 hover:bg-success/90"
+                  : "bg-background/60 text-muted ring-1 ring-border/80 hover:bg-background/70",
+              ].join(" ")}
+              onClick={() => setAutoEnter((v) => !v)}
+            >
+              AUTO ENTER {autoEnter ? "ON" : "OFF"}
+            </Button>
+            <Button
+              variant="soft"
+              className={[
+                "px-4 py-2",
+                autoExit
+                  ? "bg-success text-background ring-0 hover:bg-success/90"
+                  : "bg-background/60 text-muted ring-1 ring-border/80 hover:bg-background/70",
+              ].join(" ")}
+              onClick={() => setAutoExit((v) => !v)}
+            >
+              AUTO EXIT {autoExit ? "ON" : "OFF"}
+            </Button>
+            <div className="ml-1 text-right">
+              <p className="text-xs text-muted">
+                {positions.length ? `${positions.length} open` : "none"} • max 5
+              </p>
+              <p className="text-[11px] text-muted">
+                {autoBusy
+                  ? "auto running…"
+                  : autoEnter || autoExit
+                    ? "auto armed"
+                    : "auto disabled"}
+              </p>
+            </div>
+          </div>
         </div>
 
         {positionsErr ? (
           <div className="px-6 pb-4 text-sm text-danger">{positionsErr}</div>
         ) : null}
+
+        <div className="border-t border-border/60 px-6 py-4">
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+              <p className="text-[11px] font-medium text-muted">Auto-enter allocation</p>
+              <p className="mt-1 font-mono text-sm text-foreground">{autoEnterPct}% of free USDC</p>
+              <input
+                type="range"
+                min={1}
+                max={25}
+                step={1}
+                value={autoEnterPct}
+                onChange={(e) => setAutoEnterPct(Number(e.target.value))}
+                className="mt-2 w-full"
+              />
+            </div>
+            <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+              <p className="text-[11px] font-medium text-muted">Auto-enter sensitivity</p>
+              <p className="mt-1 font-mono text-sm text-foreground">
+                min |sigma| {autoEnterMinAbsSigma.toFixed(2)}
+              </p>
+              <input
+                type="range"
+                min={0.5}
+                max={3.5}
+                step={0.25}
+                value={autoEnterMinAbsSigma}
+                onChange={(e) => setAutoEnterMinAbsSigma(Number(e.target.value))}
+                className="mt-2 w-full"
+              />
+            </div>
+            <div className="rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+              <p className="text-[11px] font-medium text-muted">Auto-exit sensitivity</p>
+              <p className="mt-1 font-mono text-sm text-foreground">
+                exit if |sigma| &lt; {autoExitMinAbsSigma.toFixed(2)}
+              </p>
+              <input
+                type="range"
+                min={0.25}
+                max={2.0}
+                step={0.25}
+                value={autoExitMinAbsSigma}
+                onChange={(e) => setAutoExitMinAbsSigma(Number(e.target.value))}
+                className="mt-2 w-full"
+              />
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-muted">
+            Auto actions run after each refresh. Exits run first, then (if fewer than 5 positions
+            are open) auto-enter will open at most one new position per cycle.
+          </p>
+        </div>
 
         {positions.length === 0 ? (
           <div className="border-t border-border/60 px-6 py-5">
