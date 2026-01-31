@@ -62,6 +62,26 @@ export async function getMetaAndAssetCtxs() {
   });
 }
 
+export type HyperliquidFundingHistoryEntry = {
+  coin: string;
+  fundingRate: string;
+  premium: string;
+  time: number;
+};
+
+export async function getFundingHistory(req: {
+  coin: string;
+  startTime: number;
+  endTime?: number;
+}) {
+  return hyperliquidInfo<HyperliquidFundingHistoryEntry[]>({
+    type: "fundingHistory",
+    coin: req.coin,
+    startTime: req.startTime,
+    endTime: req.endTime,
+  });
+}
+
 export type HyperliquidCandle = {
   t: number; // start time ms
   T: number; // end time ms

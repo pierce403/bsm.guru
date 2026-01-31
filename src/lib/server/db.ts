@@ -70,6 +70,17 @@ function ensureSchema(db: DatabaseSync) {
       PRIMARY KEY(symbol, interval, t)
     );
 
+    CREATE TABLE IF NOT EXISTS funding_history (
+      symbol TEXT NOT NULL,
+      time INTEGER NOT NULL,
+      funding_rate REAL NOT NULL,
+      premium REAL NOT NULL,
+      PRIMARY KEY(symbol, time)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_funding_history_symbol_time
+      ON funding_history(symbol, time DESC);
+
     CREATE TABLE IF NOT EXISTS market_metrics_latest (
       symbol TEXT PRIMARY KEY,
       ts INTEGER NOT NULL,
