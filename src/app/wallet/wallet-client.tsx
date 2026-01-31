@@ -98,6 +98,36 @@ type DepositUsdcResponse =
     }
   | { error: string };
 
+type UnwrapWethResponse =
+  | {
+      ts: number;
+      result: {
+        chainId: number;
+        from: string;
+        to: string;
+        asset: "weth";
+        amount: string;
+        amountWeiOrUnits: string;
+        txHash: string;
+      };
+    }
+  | { error: string };
+
+type ArbWithdrawResponse =
+  | {
+      ts: number;
+      result: {
+        chainId: number;
+        from: string;
+        to: string;
+        asset: "eth" | "weth" | "usdc" | "usdce";
+        amount: string;
+        amountWeiOrUnits: string;
+        txHash: string;
+      };
+    }
+  | { error: string };
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   return (await res.json()) as T;
@@ -179,6 +209,18 @@ export function WalletClient() {
   const [depositUsdcRes, setDepositUsdcRes] = useState<DepositUsdcResponse | null>(null);
 
   const [autoSweep, setAutoSweep] = useState(false);
+
+  const [unwrapWethAmount, setUnwrapWethAmount] = useState("max");
+  const [unwrapping, setUnwrapping] = useState(false);
+  const [unwrapErr, setUnwrapErr] = useState<string | null>(null);
+  const [unwrapRes, setUnwrapRes] = useState<UnwrapWethResponse | null>(null);
+
+  const [withdrawTo, setWithdrawTo] = useState("");
+  const [withdrawAsset, setWithdrawAsset] = useState<"eth" | "usdc" | "usdce" | "weth">("eth");
+  const [withdrawAmount, setWithdrawAmount] = useState("max");
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawErr, setWithdrawErr] = useState<string | null>(null);
+  const [withdrawRes, setWithdrawRes] = useState<ArbWithdrawResponse | null>(null);
 
   const selectedWallet = useMemo(
     () => wallets.find((w) => w.address === selected) ?? null,
@@ -483,6 +525,92 @@ export function WalletClient() {
     },
     [refreshArbBalances, selectedWallet, usdcToDeposit, walletPassword],
   );
+
+  const unwrapWeth = useCallback(
+    async (amount: string) => {
+      const addr = selectedWallet?.address;
+      if (!addr) return;
+      setUnwrapping(true);
+      setUnwrapErr(null);
+      setUnwrapRes(null);
+      try {
+        const data = await fetchJson<UnwrapWethResponse>("/api/arbitrum/unwrap-weth", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            fromAddress: addr,
+            wethAmount: amount,
+            password: walletPassword.trim() || undefined,
+            reserveEth,
+          }),
+        });
+        setUnwrapRes(data);
+        if ("error" in data) setUnwrapErr(data.error);
+        await refreshArbBalances();
+      } catch (e) {
+        setUnwrapErr(e instanceof Error ? e.message : "Unwrap failed");
+      } finally {
+        setUnwrapping(false);
+      }
+    },
+    [refreshArbBalances, reserveEth, selectedWallet, walletPassword],
+  );
+
+  const withdraw = useCallback(async () => {
+    const addr = selectedWallet?.address;
+    if (!addr) return;
+    setWithdrawing(true);
+    setWithdrawErr(null);
+    setWithdrawRes(null);
+    try {
+      const toAddress = withdrawTo.trim();
+      if (!toAddress) {
+        setWithdrawErr("Enter a destination address");
+        return;
+      }
+
+      let amount = withdrawAmount.trim();
+      if (withdrawAsset === "usdc" || withdrawAsset === "usdce") {
+        if (amount.toLowerCase() !== "max") {
+          const n = Number(amount);
+          if (!Number.isFinite(n) || n <= 0) {
+            setWithdrawErr("Enter a valid USDC amount");
+            return;
+          }
+          amount = BigInt(Math.floor(n * 1_000_000)).toString();
+        }
+      } else if (withdrawAsset === "eth" || withdrawAsset === "weth") {
+        if (amount.toLowerCase() !== "max") {
+          const n = Number(amount);
+          if (!Number.isFinite(n) || n <= 0) {
+            setWithdrawErr("Enter a valid amount");
+            return;
+          }
+        }
+      }
+
+      const data = await fetchJson<ArbWithdrawResponse>("/api/arbitrum/withdraw", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          fromAddress: addr,
+          toAddress,
+          asset: withdrawAsset,
+          amount,
+          password: walletPassword.trim() || undefined,
+          reserveEth,
+        }),
+      });
+
+      setWithdrawRes(data);
+      if ("error" in data) setWithdrawErr(data.error);
+      await refreshArbBalances();
+    } catch (e) {
+      setWithdrawErr(e instanceof Error ? e.message : "Withdraw failed");
+    } finally {
+      setWithdrawing(false);
+    }
+  }, [refreshArbBalances, reserveEth, selectedWallet, walletPassword, withdrawAmount, withdrawAsset, withdrawTo]);
 
   // Optional automation: if ETH arrives, swap the excess above reserve and deposit it.
   useEffect(() => {
@@ -1152,6 +1280,158 @@ export function WalletClient() {
                     </p>
                   </div>
                 ) : null}
+              </div>
+            </div>
+
+            <div className="rounded-3xl bg-background/60 p-4 ring-1 ring-border/80">
+              <p className="text-xs font-medium text-muted">Withdraw / unwrap</p>
+              <p className="mt-2 text-sm leading-6 text-muted">
+                If you see WETH in this wallet, it usually means an earlier{" "}
+                <span className="font-medium text-foreground">ETH → USDC</span> attempt wrapped ETH first
+                (WETH is required for Uniswap), but the swap didn’t complete. You can unwrap WETH back
+                to ETH, or withdraw tokens to another address and swap there.
+              </p>
+
+              <div className="mt-4 grid gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">Destination address</label>
+                    <Input
+                      value={withdrawTo}
+                      onChange={(e) => setWithdrawTo(e.target.value)}
+                      placeholder="0x…"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">Asset</label>
+                    <select
+                      className="h-10 w-full rounded-2xl bg-background/60 px-3 text-sm text-foreground ring-1 ring-border/80"
+                      value={withdrawAsset}
+                      onChange={(e) => setWithdrawAsset(e.target.value as typeof withdrawAsset)}
+                    >
+                      <option value="eth">ETH</option>
+                      <option value="weth">WETH</option>
+                      <option value="usdc">USDC</option>
+                      <option value="usdce">USDC.e</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">
+                      Amount ({withdrawAsset.toUpperCase()})
+                    </label>
+                    <Input
+                      value={withdrawAmount}
+                      onChange={(e) => setWithdrawAmount(e.target.value)}
+                      placeholder={withdrawAsset === "usdc" || withdrawAsset === "usdce" ? "25" : "max"}
+                    />
+                    <p className="text-[11px] text-muted">
+                      Use <span className="font-mono text-foreground">max</span> to send the maximum
+                      amount (ETH will automatically subtract gas + reserve).
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-muted">Wallet password (optional)</label>
+                    <Input
+                      type="password"
+                      value={walletPassword}
+                      onChange={(e) => setWalletPassword(e.target.value)}
+                      placeholder="(cached locally)"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+                  <Button
+                    variant="soft"
+                    disabled={!selectedWallet || withdrawing}
+                    onClick={() => void withdraw()}
+                  >
+                    {withdrawing ? "Withdrawing…" : "Withdraw"}
+                  </Button>
+                </div>
+
+                {withdrawErr ? (
+                  <div className="rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                    {withdrawErr}
+                  </div>
+                ) : null}
+
+                {withdrawRes && !("error" in withdrawRes) ? (
+                  <div className="rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+                    <p>
+                      Submitted withdraw{" "}
+                      <span className="font-mono text-foreground">
+                        {withdrawRes.result.asset.toUpperCase()}
+                      </span>
+                      .
+                    </p>
+                    <p className="mt-2 text-xs">
+                      Tx:{" "}
+                      <a
+                        className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                        href={`https://arbiscan.io/tx/${withdrawRes.result.txHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {withdrawRes.result.txHash.slice(0, 12)}…
+                      </a>
+                    </p>
+                  </div>
+                ) : null}
+
+                <div className="mt-2 rounded-2xl bg-background/60 p-3 ring-1 ring-border/80">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium text-muted">Unwrap WETH → ETH</p>
+                      <p className="text-[11px] text-muted">
+                        Current WETH:{" "}
+                        <span className="font-mono text-foreground">
+                          {arbBalances && !("error" in arbBalances) ? formatEth(arbBalances.weth) : "—"}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        value={unwrapWethAmount}
+                        onChange={(e) => setUnwrapWethAmount(e.target.value)}
+                        placeholder="max"
+                      />
+                      <Button
+                        variant="ghost"
+                        disabled={!selectedWallet || unwrapping}
+                        onClick={() => void unwrapWeth(unwrapWethAmount)}
+                      >
+                        {unwrapping ? "Unwrapping…" : "Unwrap"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {unwrapErr ? (
+                    <div className="mt-3 rounded-2xl bg-background/60 p-3 text-sm text-danger ring-1 ring-border/80">
+                      {unwrapErr}
+                    </div>
+                  ) : null}
+
+                  {unwrapRes && !("error" in unwrapRes) ? (
+                    <div className="mt-3 rounded-2xl bg-background/60 p-3 text-sm text-muted ring-1 ring-border/80">
+                      <p>Submitted unwrap.</p>
+                      <p className="mt-2 text-xs">
+                        Tx:{" "}
+                        <a
+                          className="font-mono text-sm text-foreground underline decoration-border/80 underline-offset-4 hover:decoration-foreground"
+                          href={`https://arbiscan.io/tx/${unwrapRes.result.txHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {unwrapRes.result.txHash.slice(0, 12)}…
+                        </a>
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </Card>

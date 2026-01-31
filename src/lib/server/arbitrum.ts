@@ -101,6 +101,16 @@ export type UsdcDepositResult = {
   depositTxHash: string;
 };
 
+export type ArbitrumWithdrawResult = {
+  chainId: number;
+  from: string;
+  to: string;
+  asset: "eth" | "weth" | "usdc" | "usdce";
+  amount: string; // decimal string for UI echo
+  amountWeiOrUnits: string; // wei for eth/weth, units for usdc/usdce
+  txHash: string;
+};
+
 const quoterIface = new Interface([
   "function quoteExactInputSingle(address tokenIn,address tokenOut,uint24 fee,uint256 amountIn,uint160 sqrtPriceLimitX96) returns (uint256 amountOut)",
 ]);
@@ -112,12 +122,217 @@ const routerIface = new Interface([
 const wethIface = new Interface([
   "function deposit() payable",
   "function approve(address spender,uint256 value) returns (bool)",
+  "function withdraw(uint256 wad)",
+  "function balanceOf(address) view returns (uint256)",
 ]);
 
 const usdcIface = new Interface([
   "function balanceOf(address) view returns (uint256)",
   "function transfer(address to,uint256 amount) returns (bool)",
 ]);
+
+async function loadArbSigner(fromAddress: string, password?: string) {
+  const from = fromAddress.toLowerCase();
+  if (!isAddress(from)) throw new Error("Invalid from address");
+  const provider = getArbitrumProvider();
+  const keystoreJson = readKeystore(from);
+  const wallet = await Wallet.fromEncryptedJson(keystoreJson, password ?? "");
+  if (wallet.address.toLowerCase() !== from) {
+    throw new Error("Keystore does not match the requested from address");
+  }
+  return { from, provider, signer: wallet.connect(provider) };
+}
+
+async function currentGasCostWei(provider: JsonRpcProvider, tx: { to: string; data?: string; value?: bigint }) {
+  const [feeData, gasLimit] = await Promise.all([
+    provider.getFeeData(),
+    provider.estimateGas(tx),
+  ]);
+
+  const price = feeData.maxFeePerGas ?? feeData.gasPrice;
+  if (!price) throw new Error("Unable to determine gas price");
+
+  // Small safety multiplier to reduce “insufficient funds” errors on fee spikes.
+  const paddedGas = (gasLimit * BigInt(12)) / BigInt(10);
+  return paddedGas * price;
+}
+
+export async function unwrapWethToEth(opts: {
+  fromAddress: string;
+  // WETH amount in decimal ETH string (e.g. "0.1") or "max".
+  wethAmount: string;
+  password?: string;
+  // Keep at least this much ETH in the wallet for future gas (default "0.002").
+  reserveEth?: string;
+}): Promise<ArbitrumWithdrawResult> {
+  const reserveEth = opts.reserveEth ?? "0.002";
+  const { from, provider, signer } = await loadArbSigner(opts.fromAddress, opts.password);
+
+  const reserveWei = parseEther(reserveEth);
+  const ethLatest = await provider.getBalance(from, "latest");
+  if (ethLatest <= reserveWei) {
+    throw new Error(`Insufficient ETH for gas: latest ${formatEther(ethLatest)} ETH; reserve ${reserveEth} ETH`);
+  }
+
+  const wethBalRes = await provider.call({
+    to: WETH_ARB,
+    data: wethIface.encodeFunctionData("balanceOf", [from]),
+  });
+  const wethBalWei = (wethIface.decodeFunctionResult("balanceOf", wethBalRes) as unknown as [bigint])[0];
+
+  let amountWei: bigint;
+  if (opts.wethAmount.trim().toLowerCase() === "max") {
+    amountWei = wethBalWei;
+  } else {
+    amountWei = parseEther(opts.wethAmount);
+  }
+
+  if (amountWei <= BigInt(0)) throw new Error("wethAmount must be > 0");
+  if (amountWei > wethBalWei) throw new Error("wethAmount exceeds WETH balance");
+
+  // Ensure we can still cover gas after the unwrap tx.
+  const gasCost = await currentGasCostWei(provider, {
+    to: WETH_ARB,
+    data: wethIface.encodeFunctionData("withdraw", [amountWei]),
+    value: BigInt(0),
+  });
+  if (ethLatest <= reserveWei + gasCost) {
+    throw new Error("Insufficient ETH for gas after reserve");
+  }
+
+  const tx = await signer.sendTransaction({
+    to: WETH_ARB,
+    data: wethIface.encodeFunctionData("withdraw", [amountWei]),
+    value: BigInt(0),
+  });
+  await tx.wait();
+
+  return {
+    chainId: ARB_CHAIN_ID,
+    from,
+    to: WETH_ARB,
+    asset: "weth",
+    amount: opts.wethAmount,
+    amountWeiOrUnits: amountWei.toString(),
+    txHash: tx.hash,
+  };
+}
+
+export async function withdrawFromArbitrumWallet(opts: {
+  fromAddress: string;
+  toAddress: string;
+  asset: "eth" | "weth" | "usdc" | "usdce";
+  // Amount in decimal string for ETH/WETH (18dp), or units string for USDC/USDC.e (6dp), or "max".
+  amount: string;
+  password?: string;
+  // Keep at least this much ETH in the wallet for future gas (default "0.002").
+  reserveEth?: string;
+}): Promise<ArbitrumWithdrawResult> {
+  const reserveEth = opts.reserveEth ?? "0.002";
+  const { from, provider, signer } = await loadArbSigner(opts.fromAddress, opts.password);
+
+  const to = opts.toAddress;
+  if (!isAddress(to)) throw new Error("Invalid to address");
+
+  const reserveWei = parseEther(reserveEth);
+  const ethLatest = await provider.getBalance(from, "latest");
+
+  if (opts.asset === "eth") {
+    const gasCost = await currentGasCostWei(provider, { to, value: BigInt(0) });
+    const spendable = ethLatest > reserveWei + gasCost ? ethLatest - reserveWei - gasCost : BigInt(0);
+    if (spendable <= BigInt(0)) throw new Error("No spendable ETH (after reserve + gas)");
+
+    const amountWei =
+      opts.amount.trim().toLowerCase() === "max" ? spendable : parseEther(opts.amount);
+    if (amountWei <= BigInt(0)) throw new Error("amount must be > 0");
+    if (amountWei > spendable) throw new Error("amount exceeds spendable ETH (after reserve + gas)");
+
+    const tx = await signer.sendTransaction({ to, value: amountWei });
+    await tx.wait();
+    return {
+      chainId: ARB_CHAIN_ID,
+      from,
+      to: to.toLowerCase(),
+      asset: "eth",
+      amount: opts.amount,
+      amountWeiOrUnits: amountWei.toString(),
+      txHash: tx.hash,
+    };
+  }
+
+  if (opts.asset === "weth") {
+    const wethBalRes = await provider.call({
+      to: WETH_ARB,
+      data: wethIface.encodeFunctionData("balanceOf", [from]),
+    });
+    const wethBalWei = (wethIface.decodeFunctionResult("balanceOf", wethBalRes) as unknown as [bigint])[0];
+    const amountWei =
+      opts.amount.trim().toLowerCase() === "max" ? wethBalWei : parseEther(opts.amount);
+    if (amountWei <= BigInt(0)) throw new Error("amount must be > 0");
+    if (amountWei > wethBalWei) throw new Error("amount exceeds WETH balance");
+
+    const gasCost = await currentGasCostWei(provider, {
+      to: WETH_ARB,
+      data: usdcIface.encodeFunctionData("transfer", [to, amountWei]),
+      value: BigInt(0),
+    });
+    if (ethLatest <= reserveWei + gasCost) throw new Error("Insufficient ETH for gas after reserve");
+
+    const tx = await signer.sendTransaction({
+      to: WETH_ARB,
+      data: usdcIface.encodeFunctionData("transfer", [to, amountWei]),
+      value: BigInt(0),
+    });
+    await tx.wait();
+    return {
+      chainId: ARB_CHAIN_ID,
+      from,
+      to: to.toLowerCase(),
+      asset: "weth",
+      amount: opts.amount,
+      amountWeiOrUnits: amountWei.toString(),
+      txHash: tx.hash,
+    };
+  }
+
+  const token = opts.asset === "usdc" ? USDC_ARB : USDC_E_ARB;
+  const balRes = await provider.call({
+    to: token,
+    data: usdcIface.encodeFunctionData("balanceOf", [from]),
+  });
+  const balUnits = (usdcIface.decodeFunctionResult("balanceOf", balRes) as unknown as [bigint])[0];
+
+  // USDC tokens are 6 decimals: the UI passes raw units strings in most places,
+  // but we also allow "max" for convenience.
+  const amountUnits =
+    opts.amount.trim().toLowerCase() === "max" ? balUnits : BigInt(opts.amount);
+  if (amountUnits <= BigInt(0)) throw new Error("amount must be > 0");
+  if (amountUnits > balUnits) throw new Error("amount exceeds token balance");
+
+  const gasCost = await currentGasCostWei(provider, {
+    to: token,
+    data: usdcIface.encodeFunctionData("transfer", [to, amountUnits]),
+    value: BigInt(0),
+  });
+  if (ethLatest <= reserveWei + gasCost) throw new Error("Insufficient ETH for gas after reserve");
+
+  const tx = await signer.sendTransaction({
+    to: token,
+    data: usdcIface.encodeFunctionData("transfer", [to, amountUnits]),
+    value: BigInt(0),
+  });
+  await tx.wait();
+
+  return {
+    chainId: ARB_CHAIN_ID,
+    from,
+    to: to.toLowerCase(),
+    asset: opts.asset,
+    amount: opts.amount,
+    amountWeiOrUnits: amountUnits.toString(),
+    txHash: tx.hash,
+  };
+}
 
 function usdcTokenFor(token: "usdc" | "usdce") {
   return token === "usdc" ? USDC_ARB : USDC_E_ARB;
