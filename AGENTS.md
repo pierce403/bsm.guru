@@ -44,6 +44,8 @@ pnpm build
   - `GET /api/hyperliquid/meta` -> `src/app/api/hyperliquid/meta/route.ts`
   - `POST /api/sync/hyperliquid` -> `src/app/api/sync/hyperliquid/route.ts`
   - `GET /api/markets/summary` -> `src/app/api/markets/summary/route.ts`
+  - `GET /api/arbitrum/balances/:address` -> `src/app/api/arbitrum/balances/[address]/route.ts`
+  - `POST /api/hyperliquid/deposit-from-eth` -> `src/app/api/hyperliquid/deposit-from-eth/route.ts`
   - `GET/POST /api/wallets` -> `src/app/api/wallets/route.ts`
   - `GET /api/wallets/:address/keystore` -> `src/app/api/wallets/[address]/keystore/route.ts`
 - Hyperliquid client helpers: `src/lib/hyperliquid/info.ts`
@@ -56,6 +58,7 @@ pnpm build
   - Local DB schema + access: `src/lib/server/db.ts`
   - Hyperliquid sync job: `src/lib/server/sync/hyperliquid.ts`
   - Wallet keystores on disk: `src/lib/server/wallets.ts`
+  - Arbitrum + Uniswap + Hyperliquid deposit helper: `src/lib/server/arbitrum.ts`
 - UI primitives: `src/components/ui/*`
 
 ## Data Sources / Assumptions
@@ -115,3 +118,4 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 - 2026-01-30: Added custodial wallet feature (keystore files on disk + download endpoint + wallet UI). Wallet APIs are localhost-only by default.
 - 2026-01-30: Wallet UI focuses on Hyperliquid-style funding (Arbitrum deposit address + QR); removed Base-specific wallet UX.
 - 2026-01-30: Added Veritasium-style probability-weighted payoff chart (PDF + EV density) per market via a modal on the dashboard table.
+- 2026-01-31: Added Arbitrum ETH->USDC swap + Hyperliquid deposit flow (manual + optional auto-sweep) on the wallet page.

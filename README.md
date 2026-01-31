@@ -16,7 +16,9 @@ Black-Scholes-Merton tooling for spotting relative value in crypto options.
   - `POST /api/sync/hyperliquid` (sync Hyperliquid -> local DB)
   - `GET /api/markets/summary` (read from local DB)
   - `GET /api/options/atm?symbol=BTC&spot=12345` (Deribit ATM option snapshot)
-  - `GET/POST /api/wallets` + `GET /api/wallets/:address/keystore`
+- `GET/POST /api/wallets` + `GET /api/wallets/:address/keystore`
+- `GET /api/arbitrum/balances/:address` (Arbitrum ETH + USDC)
+- `POST /api/hyperliquid/deposit-from-eth` (swap Arbitrum ETH -> USDC, then deposit)
 - Quant libs:
   - `src/lib/quant/bsm.ts` (price/greeks/implied vol)
   - `src/lib/quant/vol.ts` (realized vol)
@@ -56,6 +58,10 @@ Wallets:
 
 - `BSM_WALLET_DIR` (default: `./data/wallets`)
 - `BSM_ALLOW_NONLOCAL_WALLET=true` (NOT recommended; disables localhost-only guard for wallet APIs)
+
+Arbitrum:
+
+- `ARBITRUM_RPC_URL` (default: `https://arb1.arbitrum.io/rpc`)
 
 ## Next step (to make this “real”)
 
