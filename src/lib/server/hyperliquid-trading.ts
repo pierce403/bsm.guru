@@ -9,7 +9,7 @@ type PlaceOrderResponse = unknown;
 
 type MetaAndCtxs = [
   { universe: Array<{ name: string; szDecimals: number }> },
-  Array<{ midPx: string }>,
+  Array<{ midPx: string; impactPxs?: [string, string] }>,
 ];
 
 type OrderResponseShape = {
@@ -126,7 +126,14 @@ function uniq<T>(arr: T[]) {
 function slippageSchedule(baseBps: number) {
   const b = Math.min(Math.max(Math.floor(baseBps), 0), 2000);
   // Escalate quickly but cap the worst-case.
-  return uniq([b, Math.min(Math.max(b * 3, 100), 2000), Math.min(Math.max(b * 6, 200), 2000)]);
+  return uniq([
+    b,
+    Math.min(Math.max(b * 3, 100), 2000),
+    Math.min(Math.max(b * 8, 250), 2000),
+    500,
+    1000,
+    2000,
+  ]);
 }
 
 export async function placePerpIocOrder(opts: {
@@ -184,6 +191,13 @@ export async function placePerpIocOrder(opts: {
   // Retry a few times with higher slippage before giving up.
   const slips = slippageSchedule(opts.slippageBps ?? 50);
   let lastNoFill: Error | null = null;
+  const attempts: Array<{
+    slippageBps: number;
+    midPx: number;
+    refPx: number;
+    limitPx: number;
+    qty: number;
+  }> = [];
 
   for (let attempt = 0; attempt < slips.length; attempt++) {
     const slippageBps = slips[attempt]!;
@@ -201,6 +215,10 @@ export async function placePerpIocOrder(opts: {
     const midPx = toNum(ctx?.midPx);
     if (midPx === null || midPx <= 0) throw new Error("No mid price for asset");
 
+    const impactPxs = ctx?.impactPxs ?? null;
+    const impactBid = impactPxs ? toNum(impactPxs[0]) : null;
+    const impactAsk = impactPxs ? toNum(impactPxs[1]) : null;
+
     const szDecimals = toNum(uni[idx]?.szDecimals);
     if (szDecimals === null || szDecimals < 0) throw new Error("No szDecimals for asset");
 
@@ -208,7 +226,17 @@ export async function placePerpIocOrder(opts: {
     if (!Number.isFinite(qty) || qty <= 0) throw new Error("Computed size is too small");
 
     const isBuy = opts.side === "long";
-    const limitPx = isBuy ? midPx * (1 + slip) : midPx * (1 - slip);
+    // Prefer impact price (more "crossing") if available, otherwise use mid.
+    const refPx =
+      isBuy
+        ? impactAsk !== null && impactAsk > 0
+          ? impactAsk
+          : midPx
+        : impactBid !== null && impactBid > 0
+          ? impactBid
+          : midPx;
+    const limitPx = isBuy ? refPx * (1 + slip) : refPx * (1 - slip);
+    attempts.push({ slippageBps, midPx, refPx, limitPx, qty });
 
     try {
       const res = (await sdk.exchange.placeOrder({
@@ -237,8 +265,18 @@ export async function placePerpIocOrder(opts: {
     }
   }
 
+  const attemptMsg = attempts.length
+    ? ` attempts: ${attempts
+        .slice(0, 6)
+        .map(
+          (a) =>
+            `${a.slippageBps}bps@${a.limitPx.toFixed(4)}(ref ${a.refPx.toFixed(4)}, mid ${a.midPx.toFixed(4)}, qty ${a.qty})`,
+        )
+        .join(" | ")}`
+    : "";
+
   throw new Error(
-    `${lastNoFill?.message ?? "Order did not fill"} (try increasing slippage or reducing size)`,
+    `${lastNoFill?.message ?? "Order did not fill"}${attemptMsg} (try increasing slippage or reducing size)`,
   );
 
 }
@@ -287,6 +325,13 @@ export async function closePerpIocOrder(opts: {
 
   const slips = slippageSchedule(opts.slippageBps ?? 50);
   let lastNoFill: Error | null = null;
+  const attempts: Array<{
+    slippageBps: number;
+    midPx: number;
+    refPx: number;
+    limitPx: number;
+    qty: number;
+  }> = [];
 
   for (let attempt = 0; attempt < slips.length; attempt++) {
     const slippageBps = slips[attempt]!;
@@ -303,12 +348,25 @@ export async function closePerpIocOrder(opts: {
     const midPx = toNum(ctx?.midPx);
     if (midPx === null || midPx <= 0) throw new Error("No mid price for asset");
 
+    const impactPxs = ctx?.impactPxs ?? null;
+    const impactBid = impactPxs ? toNum(impactPxs[0]) : null;
+    const impactAsk = impactPxs ? toNum(impactPxs[1]) : null;
+
     const szDecimals = toNum(uni[idx]?.szDecimals);
     if (szDecimals === null || szDecimals < 0) throw new Error("No szDecimals for asset");
 
     const roundedQty = roundToDecimals(qty, szDecimals);
     const isBuy = opts.closeSide === "buy";
-    const limitPx = isBuy ? midPx * (1 + slip) : midPx * (1 - slip);
+    const refPx =
+      isBuy
+        ? impactAsk !== null && impactAsk > 0
+          ? impactAsk
+          : midPx
+        : impactBid !== null && impactBid > 0
+          ? impactBid
+          : midPx;
+    const limitPx = isBuy ? refPx * (1 + slip) : refPx * (1 - slip);
+    attempts.push({ slippageBps, midPx, refPx, limitPx, qty: roundedQty });
 
     try {
       const res = (await sdk.exchange.placeOrder({
@@ -337,7 +395,17 @@ export async function closePerpIocOrder(opts: {
     }
   }
 
+  const attemptMsg = attempts.length
+    ? ` attempts: ${attempts
+        .slice(0, 6)
+        .map(
+          (a) =>
+            `${a.slippageBps}bps@${a.limitPx.toFixed(4)}(ref ${a.refPx.toFixed(4)}, mid ${a.midPx.toFixed(4)}, qty ${a.qty})`,
+        )
+        .join(" | ")}`
+    : "";
+
   throw new Error(
-    `${lastNoFill?.message ?? "Order did not fill"} (try increasing slippage)`,
+    `${lastNoFill?.message ?? "Order did not fill"}${attemptMsg} (try increasing slippage)`,
   );
 }
