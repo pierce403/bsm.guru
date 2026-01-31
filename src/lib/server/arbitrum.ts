@@ -120,9 +120,14 @@ async function loadArbSigner(fromAddress: string, password?: string) {
   return { from, provider, signer: wallet.connect(provider) };
 }
 
-async function currentGasCostWei(provider: JsonRpcProvider, tx: { to: string; data?: string; value?: bigint }) {
+async function currentGasCostWei(
+  provider: JsonRpcProvider,
+  tx: { from: string; to: string; data?: string; value?: bigint },
+) {
   const [feeData, gasLimit] = await Promise.all([
     provider.getFeeData(),
+    // Important: set `from` explicitly. Many ERC-20s will revert if estimateGas
+    // is simulated from the default zero-address (msg.sender == 0x0).
     provider.estimateGas(tx),
   ]);
 
@@ -169,6 +174,7 @@ export async function unwrapWethToEth(opts: {
 
   // Ensure we can still cover gas after the unwrap tx.
   const gasCost = await currentGasCostWei(provider, {
+    from,
     to: WETH_ARB,
     data: wethIface.encodeFunctionData("withdraw", [amountWei]),
     value: BigInt(0),
@@ -215,7 +221,7 @@ export async function withdrawFromArbitrumWallet(opts: {
   const ethLatest = await provider.getBalance(from, "latest");
 
   if (opts.asset === "eth") {
-    const gasCost = await currentGasCostWei(provider, { to, value: BigInt(0) });
+    const gasCost = await currentGasCostWei(provider, { from, to, value: BigInt(0) });
     const spendable = ethLatest > reserveWei + gasCost ? ethLatest - reserveWei - gasCost : BigInt(0);
     if (spendable <= BigInt(0)) throw new Error("No spendable ETH (after reserve + gas)");
 
@@ -249,6 +255,7 @@ export async function withdrawFromArbitrumWallet(opts: {
     if (amountWei > wethBalWei) throw new Error("amount exceeds WETH balance");
 
     const gasCost = await currentGasCostWei(provider, {
+      from,
       to: WETH_ARB,
       data: usdcIface.encodeFunctionData("transfer", [to, amountWei]),
       value: BigInt(0),
@@ -287,6 +294,7 @@ export async function withdrawFromArbitrumWallet(opts: {
   if (amountUnits > balUnits) throw new Error("amount exceeds token balance");
 
   const gasCost = await currentGasCostWei(provider, {
+    from,
     to: token,
     data: usdcIface.encodeFunctionData("transfer", [to, amountUnits]),
     value: BigInt(0),
