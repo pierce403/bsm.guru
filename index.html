@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>bsm.guru - BSM-flavored Hyperliquid Perp Screener</title>
+    <meta
+      name="description"
+      content="bsm.guru is a local-first screener that uses Black-Scholes-Merton-inspired lognormal assumptions to quantify how unusual a perp move is vs realized volatility, and to drive a simple enter/exit workflow on Hyperliquid."
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..700&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --bg0: #0b0d12;
+        --bg1: #0f1530;
+        --card: rgba(255, 255, 255, 0.06);
+        --card2: rgba(255, 255, 255, 0.09);
+        --text: rgba(255, 255, 255, 0.92);
+        --muted: rgba(255, 255, 255, 0.68);
+        --faint: rgba(255, 255, 255, 0.48);
+        --border: rgba(255, 255, 255, 0.12);
+        --accent: #a4f4cf;
+        --accent2: #73b6ff;
+        --danger: #ff6b6b;
+        --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+          monospace;
+        --sans: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans",
+          "Liberation Sans", sans-serif;
+        --serif: "Fraunces", ui-serif, Georgia, "Times New Roman", Times, serif;
+        --shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+        --radius: 18px;
+        --radius2: 26px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: var(--sans);
+        line-height: 1.6;
+        background:
+          radial-gradient(1000px 600px at 10% 0%, rgba(115, 182, 255, 0.18), transparent 60%),
+          radial-gradient(900px 520px at 90% 10%, rgba(164, 244, 207, 0.14), transparent 62%),
+          radial-gradient(1200px 700px at 50% 100%, rgba(255, 255, 255, 0.06), transparent 60%),
+          linear-gradient(180deg, var(--bg0), var(--bg1));
+        overflow-x: hidden;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      .wrap {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 28px 18px 64px;
+      }
+
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 2px 22px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .brand .name {
+        font-family: var(--serif);
+        font-size: 22px;
+        letter-spacing: -0.02em;
+      }
+      .brand .tag {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--accent), var(--accent2));
+        box-shadow: 0 0 0 4px rgba(164, 244, 207, 0.09);
+      }
+
+      .hero {
+        border: 1px solid var(--border);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.05));
+        border-radius: var(--radius2);
+        box-shadow: var(--shadow);
+        padding: 26px;
+        position: relative;
+        overflow: hidden;
+      }
+      .hero:before {
+        content: "";
+        position: absolute;
+        inset: -120px -120px auto auto;
+        width: 360px;
+        height: 360px;
+        background: radial-gradient(circle at 30% 30%, rgba(115, 182, 255, 0.32), transparent 65%);
+        filter: blur(1px);
+        pointer-events: none;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-family: var(--serif);
+        font-size: clamp(34px, 5vw, 56px);
+        line-height: 1.06;
+        letter-spacing: -0.03em;
+      }
+      .hero p {
+        margin: 14px 0 0;
+        color: var(--muted);
+        font-size: 15px;
+        max-width: 70ch;
+      }
+
+      .ctaRow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 11px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .btn.primary {
+        background: linear-gradient(135deg, rgba(164, 244, 207, 0.18), rgba(115, 182, 255, 0.14));
+        border-color: rgba(164, 244, 207, 0.22);
+      }
+      .btn code {
+        font-family: var(--mono);
+        font-weight: 600;
+        font-size: 12px;
+        color: var(--text);
+        background: rgba(0, 0, 0, 0.2);
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 14px;
+        margin-top: 18px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: var(--radius);
+        padding: 16px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .card p {
+        margin: 0;
+        color: var(--text);
+        font-size: 14px;
+      }
+      .kicker {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--faint);
+        margin-top: 10px;
+      }
+
+      .span6 {
+        grid-column: span 6;
+      }
+      .span7 {
+        grid-column: span 7;
+      }
+      .span5 {
+        grid-column: span 5;
+      }
+      .span12 {
+        grid-column: span 12;
+      }
+
+      .section {
+        margin-top: 26px;
+      }
+      .section h2 {
+        margin: 0 0 10px;
+        font-size: 18px;
+        letter-spacing: -0.01em;
+      }
+      .section .sub {
+        color: var(--muted);
+        margin: 0 0 14px;
+        max-width: 78ch;
+      }
+
+      .callout {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.05));
+        border-radius: var(--radius);
+        padding: 14px 14px 12px;
+      }
+      .callout strong {
+        color: var(--text);
+      }
+
+      .mono {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--text);
+      }
+      pre {
+        margin: 10px 0 0;
+        padding: 14px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(0, 0, 0, 0.28);
+        overflow: auto;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }
+      pre code {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.88);
+      }
+
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+      }
+      .table th,
+      .table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+        vertical-align: top;
+      }
+      .table th {
+        text-align: left;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .table td {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.86);
+      }
+      .table tr:last-child td {
+        border-bottom: none;
+      }
+
+      .warn {
+        border-color: rgba(255, 107, 107, 0.28);
+        background: linear-gradient(180deg, rgba(255, 107, 107, 0.08), rgba(255, 255, 255, 0.05));
+      }
+
+      .footer {
+        margin-top: 30px;
+        padding-top: 18px;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--faint);
+        font-size: 12px;
+      }
+      .footer .mono {
+        color: var(--faint);
+      }
+
+      @media (max-width: 860px) {
+        .span6,
+        .span7,
+        .span5 {
+          grid-column: span 12;
+        }
+        .top {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="wrap">
+      <div class="top">
+        <div class="brand">
+          <div class="name">bsm.guru</div>
+          <div class="tag">local-first hyperliquid perp screener</div>
+        </div>
+        <div class="pill" title="This tool is designed to run locally, not as a hosted web app.">
+          <span class="dot" aria-hidden="true"></span>
+          local-only by default (wallet + trading routes are localhost-gated)
+        </div>
+      </div>
+
+      <div class="hero">
+        <h1>Spot weird perps. Quantify it. Trade it.</h1>
+        <p>
+          <strong>bsm.guru</strong> is a local-first screener that uses Black-Scholes-Merton-inspired
+          lognormal assumptions as a baseline to quantify how unusual a perp move is vs realized
+          volatility. The UI ranks Hyperliquid markets, suggests a small set of positions, and can
+          optionally auto-enter/auto-exit based on your thresholds.
+        </p>
+
+        <div class="ctaRow">
+          <a class="btn primary" href="#quickstart">Quick start <code>./run.sh</code></a>
+          <a class="btn" href="#metrics">What the metrics mean</a>
+          <a class="btn" href="#safety">Safety + limitations</a>
+        </div>
+
+        <div class="grid">
+          <div class="card span6">
+            <h3>What it is</h3>
+            <p>
+              A volatility-normalized perp dashboard + trading helper for Hyperliquid. It syncs live
+              mids and candles, computes realized volatility, and turns the last 24h move into a
+              simple "how many sigmas was that?" score.
+            </p>
+            <div class="kicker">No options venue is integrated. Perps only.</div>
+          </div>
+          <div class="card span6">
+            <h3>What it is not</h3>
+            <p>
+              Not a hosted SaaS, not financial advice, and not a guarantee of edge. The "BSM" here is
+              a baseline model (lognormal + constant vol) used to measure surprise, not to claim the
+              market is "wrong."
+            </p>
+            <div class="kicker">You control the wallet keys. You control the risk.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="quickstart">
+        <h2>Quick start (local)</h2>
+        <p class="sub">
+          The app is designed to run on a machine you control. Wallet keystores live on disk and
+          trading routes are restricted to localhost by default.
+        </p>
+
+        <div class="callout">
+          <div class="mono"><strong>Run:</strong></div>
+          <pre><code>./run.sh</code></pre>
+          <div class="mono" style="margin-top: 10px"><strong>Quality gates:</strong></div>
+          <pre><code>pnpm lint
+pnpm test
+pnpm build</code></pre>
+        </div>
+
+        <div class="grid">
+          <div class="card span7">
+            <h3>Typical flow</h3>
+            <p>
+              1) Create a wallet in the app (stored on disk). 2) Fund the wallet on Arbitrum with USDC.
+              3) Deposit USDC into Hyperliquid from the wallet page. 4) Use the dashboard to enter
+              positions (or enable auto-enter/auto-exit with conservative thresholds).
+            </p>
+          </div>
+          <div class="card span5">
+            <h3>Data sync</h3>
+            <p>
+              The app periodically pulls Hyperliquid market data and candles, and stores derived metrics
+              in a local SQLite database. This powers fast UI refreshes and consistent calculations.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="theory">
+        <h2>Theory (the short version)</h2>
+        <p class="sub">
+          Black-Scholes-Merton assumes a lognormal price process with constant volatility. Crypto is
+          not constant-vol and not perfectly lognormal - but the model still gives a convenient unit:
+          "sigmas."
+        </p>
+
+        <div class="grid">
+          <div class="card span12">
+            <h3>Why this is useful</h3>
+            <p>
+              Markets move around. A 3% move is boring for some assets and extreme for others. If you
+              normalize moves by realized volatility, you can compare "how unusual" different markets
+              are on the same scale, then decide whether to fade the move, follow momentum, or avoid it.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="metrics">
+        <h2>Metrics (what you see in the UI)</h2>
+        <p class="sub">
+          These are computed locally from Hyperliquid candles and market context. They are intentionally
+          simple, inspectable, and fast.
+        </p>
+
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Meaning</th>
+              <th>How it is computed</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="mono">Realized σ</span></td>
+              <td>Annualized realized volatility estimated from recent log-returns.</td>
+              <td>
+                Take log returns from candle closes, compute sample stdev per period, then annualize by
+                <span class="mono">sqrt(yearSeconds / periodSeconds)</span>.
+              </td>
+            </tr>
+            <tr>
+              <td><span class="mono">Sigma move (24h)</span></td>
+              <td>How many "sigmas" the last 24h move represents.</td>
+              <td>
+                <span class="mono">log(mid / prevDayPx) / (sigma * sqrt(1/365))</span>. Positive is up,
+                negative is down.
+              </td>
+            </tr>
+            <tr>
+              <td><span class="mono">Tail p (24h)</span></td>
+              <td>Two-sided normal tail probability for that sigma move (smaller = rarer).</td>
+              <td>
+                <span class="mono">2 * (1 - Phi(|sigmaMove|))</span>, where <span class="mono">Phi</span>
+                is the standard normal CDF.
+              </td>
+            </tr>
+            <tr>
+              <td><span class="mono">Position health</span></td>
+              <td>
+                A "still good?" score based on how the market's current sigma move compares to what you
+                entered on. It can go down even if PnL is up.
+              </td>
+              <td>
+                The app tracks entry context and recomputes the current sigma move. Health is tied to
+                the persistence of the original signal, not just profit.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="section" id="automation">
+        <h2>Automation (auto-enter / auto-exit)</h2>
+        <p class="sub">
+          Auto trading is deliberately constrained: the app exits first, then enters up to the cap.
+        </p>
+
+        <div class="grid">
+          <div class="card span6">
+            <h3>Guardrails</h3>
+            <p>
+              By default, the app keeps a maximum of 5 concurrent positions and requires your thresholds
+              to be met at refresh time. Use conservative settings first and verify behavior with small
+              notionals.
+            </p>
+          </div>
+          <div class="card span6">
+            <h3>What triggers actions</h3>
+            <p>
+              After each refresh cycle, auto-exit evaluates open positions against your exit threshold.
+              Auto-enter looks at the current ranking and enters the best eligible position(s) until
+              the cap is reached.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="safety">
+        <h2>Safety, limitations, and logs</h2>
+        <p class="sub">
+          This tool touches real money if you enable trading. Treat it like a small trading system, not
+          a dashboard toy.
+        </p>
+
+        <div class="callout warn">
+          <strong>Important:</strong> bsm.guru is designed to run in a local, secure environment.
+          Do not expose the wallet APIs or trading APIs to the public internet.
+        </div>
+
+        <div class="grid">
+          <div class="card span6">
+            <h3>Limitations</h3>
+            <p>
+              The sigma metrics assume normality of log returns and a stable realized vol estimate.
+              Crypto frequently violates both assumptions (fat tails, regime shifts, jumps). Use these
+              metrics as context, not certainty.
+            </p>
+          </div>
+          <div class="card span6">
+            <h3>Audit trail</h3>
+            <p>
+              The app writes human-readable logs under <span class="mono">./logs/</span> (trade, wallet,
+              analysis, errors). Private keys are not logged. Every trade action aims to leave a proof
+              link via Hypurrscan / Dexly for external verification.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div>
+          <span class="mono">bsm.guru</span> - BSM-inspired perp screening and execution for Hyperliquid
+        </div>
+        <div class="mono">Run locally. Verify everything. Start small.</div>
+      </div>
+    </div>
+  </body>
+</html>
+
