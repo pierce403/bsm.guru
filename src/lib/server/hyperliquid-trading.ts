@@ -25,6 +25,17 @@ type FilledStatus = {
   };
 };
 
+type OrderStatusAny = {
+  filled?: { totalSz?: string | number; avgPx?: string | number; oid?: string | number };
+  resting?: { oid?: string | number };
+  // Observed in some failure cases (SDK/API evolves); keep broad but typed.
+  error?: string;
+  rejected?: string | { error?: string; reason?: string };
+  canceled?: string | { reason?: string };
+  marginCanceled?: string | { reason?: string };
+  [k: string]: unknown;
+};
+
 export type HyperliquidTradeProof = {
   hypurrscanAddressUrl: string;
   dexlyAddressUrl: string;
@@ -80,6 +91,27 @@ function extractFill(res: unknown): HyperliquidFill {
   }
 
   let restingOid: number | null = null;
+  const rawStatuses = statuses as OrderStatusAny[];
+
+  // Surface explicit rejection reasons if present.
+  for (const st of rawStatuses) {
+    if (typeof st?.error === "string" && st.error.trim()) {
+      throw new Error(`Order rejected: ${st.error.trim()}`);
+    }
+    if (typeof st?.rejected === "string" && st.rejected.trim()) {
+      throw new Error(`Order rejected: ${st.rejected.trim()}`);
+    }
+    if (st?.rejected && typeof st.rejected === "object") {
+      const msg =
+        typeof st.rejected.error === "string"
+          ? st.rejected.error
+          : typeof st.rejected.reason === "string"
+            ? st.rejected.reason
+            : "";
+      if (msg.trim()) throw new Error(`Order rejected: ${msg.trim()}`);
+    }
+  }
+
   for (const st of statuses) {
     const filled = (st as FilledStatus)?.filled ?? null;
     if (!filled) continue;
@@ -96,8 +128,8 @@ function extractFill(res: unknown): HyperliquidFill {
     };
   }
 
-  for (const st of statuses) {
-    const resting = (st as { resting?: { oid?: string | number } } | null)?.resting ?? null;
+  for (const st of rawStatuses) {
+    const resting = st?.resting ?? null;
     const oid = toNum(resting?.oid);
     if (oid !== null) {
       restingOid = Math.floor(oid);
@@ -105,10 +137,19 @@ function extractFill(res: unknown): HyperliquidFill {
     }
   }
 
+  const compact = (() => {
+    try {
+      // Keep it short; enough to debug but not flood logs/UI.
+      return JSON.stringify(rawStatuses.slice(0, 3));
+    } catch {
+      return "";
+    }
+  })();
+
   // If IOC doesn't fill, Hyperliquid may return a "resting" or other status.
   // Treat that as a failure for now since the UI expects immediate execution.
   throw new Error(
-    `Order did not fill (no filled status${restingOid !== null ? `; resting oid ${restingOid}` : ""})`,
+    `Order did not fill (no filled status${restingOid !== null ? `; resting oid ${restingOid}` : ""}${compact ? `; statuses ${compact}` : ""})`,
   );
 }
 
