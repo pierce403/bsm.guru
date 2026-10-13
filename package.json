@@ -14,7 +14,7 @@
   "dependencies": {
     "ethers": "^6.16.0",
     "hyperliquid": "^1.7.7",
-    "next": "16.1.6",
+    "next": "16.4.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-qr-code": "^2.0.18"
@@ -29,7 +29,14 @@
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^3.2.4"
+    "vite": "7.3.7",
+    "vitest": "^4.1.11"
   },
-  "packageManager": "pnpm@10.23.0+sha512.21c4e5698002ade97e4efe8b8b4a89a8de3c85a37919f957e7a0f30f38fbc5bbdd05980ffe29179b2fb6e6e691242e098d945d1601772cad0fef5fb6411e2a4b"
+  "packageManager": "pnpm@10.23.0+sha512.21c4e5698002ade97e4efe8b8b4a89a8de3c85a37919f957e7a0f30f38fbc5bbdd05980ffe29179b2fb6e6e691242e098d945d1601772cad0fef5fb6411e2a4b",
+  "pnpm": {
+    "overrides": {
+      "vite@7.3.7>esbuild": "0.28.2",
+      "eslint-config-next@16.1.6>eslint-plugin-react-hooks": "7.0.1"
+    }
+  }
 }
