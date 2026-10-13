@@ -78,6 +78,7 @@ pnpm build
   - `next.config.ts` sets `turbopack.root` to this project directory.
 - TypeScript can accidentally pick up global `@types/*` from outside the repo on some machines; we constrain:
   - `tsconfig.json` sets `"typeRoots": ["./node_modules/@types"]`.
+- Next.js 16.4 builds warn that dynamic filesystem paths in the server DB, logs, and wallet helpers trace the whole project into server output. Review build artifacts and keep private runtime data out of the build context before any deployment.
 
 ## How To Extend To "Real Mispriced Options"
 
@@ -119,3 +120,4 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 - 2026-01-30: Wallet UI focuses on Hyperliquid-style funding (Arbitrum deposit address + QR); removed Base-specific wallet UX.
 - 2026-01-30: Added Veritasium-style probability-weighted payoff chart (PDF + EV density) per market via a modal on the dashboard table.
 - 2026-01-31: Added Arbitrum ETH->USDC swap + Hyperliquid deposit flow (manual + optional auto-sweep) on the wallet page.
+- 2026-10-13: Refreshed the dependency graph; pinned patched Vite/esbuild and baseline React Hooks lint behavior. Production builds now flag broad filesystem tracing for review before release.
