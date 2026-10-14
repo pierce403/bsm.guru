@@ -119,3 +119,10 @@ Guidelines adapted from `recurse.bot` (paraphrased):
 - 2026-01-30: Wallet UI focuses on Hyperliquid-style funding (Arbitrum deposit address + QR); removed Base-specific wallet UX.
 - 2026-01-30: Added Veritasium-style probability-weighted payoff chart (PDF + EV density) per market via a modal on the dashboard table.
 - 2026-01-31: Added Arbitrum ETH->USDC swap + Hyperliquid deposit flow (manual + optional auto-sweep) on the wallet page.
+
+## Public hosting
+
+The isolated cloudflare/ npm package copies the public landing/download assets.
+Native Git publishes production main; credentials remain in Cloudflare and
+previews are off. npm ci && npm run check:deploy in cloudflare/ validates hosting.
+No app runtime, wallet or device behavior is moved or tested by this port.

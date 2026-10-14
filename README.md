@@ -77,3 +77,11 @@ If you tell me which one you mean by “Base Hyperliquid network” (HyperEVM ap
 ## Disclaimer
 
 For research only. Not financial advice.
+
+## Cloudflare public hosting
+
+Native Git publishes main from /cloudflare with npm ci, npm run build
+and npm run deploy. The isolated hosting package copies the existing public landing and its reviewed assets.
+Original application builds, runtime and Pages recovery stay available. Credentials
+remain in Cloudflare; previews are disabled. Verify with cd cloudflare && npm ci
+&& npm run check:deploy. Local services and wallets are not hosted.

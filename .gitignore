@@ -49,3 +49,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/cloudflare/node_modules/
+/dist/
+/.wrangler/
+/cloudflare/.wrangler/
+!/cloudflare/package-lock.json
