@@ -85,3 +85,8 @@ and npm run deploy. The isolated hosting package copies the existing public land
 Original application builds, runtime and Pages recovery stay available. Credentials
 remain in Cloudflare; previews are disabled. Verify with cd cloudflare && npm ci
 && npm run check:deploy. Local services and wallets are not hosted.
+
+## Licensing scope
+
+Original code and documentation authored for this project by Dean Pierce are licensed under the [Apache License 2.0](LICENSE).
+Third-party dependencies, assets, and quoted material retain their respective licenses and notices. This grant does not relicense third-party work.
